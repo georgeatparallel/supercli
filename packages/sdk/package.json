@@ -7,6 +7,12 @@
   "scripts": {
     "build": "echo 'sdk build pending'",
     "lint": "echo 'sdk lint pending'",
-    "typecheck": "echo 'sdk typecheck pending'"
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "zod": "^3.25.2"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0"
   }
 }
