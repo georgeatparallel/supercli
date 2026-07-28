@@ -66,6 +66,10 @@ const CLOUD_ALLOWED_MODELS = new Set([
   "kimi-k2-6",
   "minimax-m3",
   "hy3",
+  "mimo-v2.5",
+  "fireworks/nemotron-3-ultra-nvfp4",
+  "kimi-k2-7-code",
+  "kimi-k3",
 ])
 const JSON_BODY_LIMIT = process.env.SUPERCODE_JSON_BODY_LIMIT || "10mb"
 const app = express()
