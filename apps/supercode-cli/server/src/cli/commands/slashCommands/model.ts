@@ -22,6 +22,7 @@ const SECTION_MINIMAX = "__section_minimax__"
 const SECTION_NVIDIA = "__section_nvidia__"
 const SECTION_OPENROUTER = "__section_openrouter__"
 const SECTION_ORCAROUTER = "__section_orcarouter__"
+const SECTION_CLOUD_PREMIUM = "__section_cloud_premium__"
 
 export const ALL_SECTIONS = new Set([
   SECTION_CLOUD, SECTION_BYOK,
@@ -29,6 +30,7 @@ export const ALL_SECTIONS = new Set([
   SECTION_GOOGLE, SECTION_MINIMAX,
   SECTION_NVIDIA, SECTION_OPENROUTER,
   SECTION_ORCAROUTER,
+  SECTION_CLOUD_PREMIUM,
 ])
 
 const SECTION_LABELS: Record<string, string> = {
@@ -41,18 +43,21 @@ const SECTION_LABELS: Record<string, string> = {
   [SECTION_NVIDIA]: "NVIDIA NIM",
   [SECTION_OPENROUTER]: "OpenRouter",
   [SECTION_ORCAROUTER]: "OrcaRouter",
+  [SECTION_CLOUD_PREMIUM]: "Supercode Cloud Premium",
 }
 
-const isMainSection = (v: string) => v === SECTION_CLOUD || v === SECTION_BYOK
+const isMainSection = (v: string) => v === SECTION_CLOUD || v === SECTION_BYOK || v === SECTION_CLOUD_PREMIUM
 
 // Models available through the Supercode cloud proxy (no API key needed)
 export const CLOUD_MODELS: ModelEntry[] = [
   { value: "deepseek-v4-flash", label: "DeepSeek V4 Flash", provider: "supercode", cost: "free", desc: "Fast & capable" },
-  { value: "glm-5.2", label: "GLM 5.2", provider: "supercode", cost: "free", desc: "Latest GLM" },
-  { value: "glm-5.1", label: "GLM 5.1", provider: "supercode", cost: "free", desc: "Stable & reliable" },
-  { value: "kimi-k2-6", label: "Kimi K2.6", provider: "supercode", cost: "free", desc: "Long context" },
-  { value: "minimax-m3", label: "MiniMax M3", provider: "supercode", cost: "free", desc: "Fast & smart" },
+  // { value: "glm-5.2", label: "GLM 5.2", provider: "supercode", cost: "free", desc: "Latest GLM" },
+  // { value: "glm-5.1", label: "GLM 5.1", provider: "supercode", cost: "free", desc: "Stable & reliable" },
+  // { value: "kimi-k2-6", label: "Kimi K2.6", provider: "supercode", cost: "free", desc: "Long context" },
+  // { value: "minimax-m3", label: "MiniMax M3", provider: "supercode", cost: "free", desc: "Fast & smart" },
   { value: "hy3", label: "Hunyuan Hy3", provider: "supercode", cost: "free", desc: "Tencent flagship" },
+  { value: "mimo-v2.5", label: "Mimo v2.5", provider: "supercode", cost: "free", desc: "Novita" },
+  // { value: "fireworks/nemotron-3-ultra-nvfp4", label: "Nemotron 3 Ultra NVFP4", provider: "supercode", cost: "free", desc: "Fireworks" },
 ]
 
 // Models available when you bring your own API key (BYOK)
@@ -199,9 +204,22 @@ export const BYOK_MODELS: ModelEntry[] = [
   { value: "orcarouter/auto", label: "OrcaRouter Auto", provider: "orcarouter", cost: "0x", desc: "Auto-pick cheapest" },
 ]
 
+// Set of premium cloud models that require Supercode Cloud Premium
+export const PREMIUM_CLOUD_MODELS = new Set([
+  "glm-5.2",
+  "kimi-k2-7-code",
+  "kimi-k3",
+  "minimax-m3",
+])
+
 export const MODELS: ModelEntry[] = [
   { value: SECTION_CLOUD, label: "Supercode Cloud", provider: "supercode", cost: "", desc: "" },
   ...CLOUD_MODELS,
+  { value: SECTION_CLOUD_PREMIUM, label: "Supercode Cloud Premium", provider: "supercode", cost: "", desc: "" },
+  { value: "glm-5.2", label: "GLM 5.2", provider: "supercode", cost: "", desc: "Latest GLM" },
+  { value: "kimi-k2-7-code", label: "Kimi K2.7 Code", provider: "supercode", cost: "", desc: "Code specialist" },
+  { value: "kimi-k3", label: "Kimi K3", provider: "supercode", cost: "", desc: "Moonshot latest" },
+  { value: "minimax-m3", label: "MiniMax M3", provider: "supercode", cost: "", desc: "Fast & smart" },
   { value: SECTION_BYOK, label: "Bring Your Own Key", provider: "supercode", cost: "", desc: "" },
   ...BYOK_MODELS,
 ]
@@ -366,16 +384,21 @@ export class ModelPicker {
       const marker = isCurrent
         ? ` ${chalk.bgHex(theme.amber).hex(theme.black).bold(" current ")}`
         : ""
+      const isPremium = PREMIUM_CLOUD_MODELS.has(m.value)
       const cloudTag =
-        m.provider === "supercode" && !isCurrent
+        m.provider === "supercode" && !isCurrent && !isPremium
           ? ` ${chalk.bgHex(theme.green).hex(theme.black).bold(" CLOUD ")}`
+          : ""
+      const premiumTag =
+        isPremium && !isCurrent
+          ? ` ${chalk.bgHex(theme.amber).hex(theme.black).bold(" PREMIUM ")}`
           : ""
       const freeTag =
         !isCurrent && m.cost === "free" && m.provider !== "supercode"
           ? ` ${chalk.bgHex(theme.green).hex(theme.black).bold(" FREE ")}`
           : ""
 
-      const label = `${prefix} ${name} ${cost}${desc}${marker}${cloudTag}${freeTag}`
+      const label = `${prefix} ${name} ${cost}${desc}${marker}${cloudTag}${premiumTag}${freeTag}`
 
       if (isSelected) {
         const bg = chalk.bgHex(theme.greenDeep)
@@ -583,6 +606,21 @@ export async function pickModel(
       `  ${chalk.hex(theme.green)("✓")} model set to ${chalk.hex(theme.greenGlow)(trimmed)}\n\n`,
     )
     return { provider: selected.provider, model: trimmed }
+  }
+
+  // Premium cloud models require Supercode Cloud Premium
+  if (PREMIUM_CLOUD_MODELS.has(selected.value)) {
+    process.stdout.write("\n")
+    process.stdout.write(
+      ` ${chalk.hex(theme.amber)("◆")}  ${chalk.hex(theme.green).bold("Supercode Cloud Premium")}
+
+   ${chalk.hex(theme.muted)("This model is available on Supercode Cloud Premium.")}
+   ${chalk.hex(theme.muted)("Upgrade your plan to access premium models.")}
+   ${chalk.hex(theme.muted)("→ https://supercode.ai/pricing")}
+
+`
+    )
+    return { provider: currentProvider as ModelProvider, model: currentModel }
   }
 
   // For BYOK providers, check if an API key is configured
