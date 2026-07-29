@@ -1,0 +1,77 @@
+---
+title: "Why we built Supercode"
+slug: "why-we-built-supercode"
+description: "The story behind building an open-source SWE agent that lives in your terminal."
+date: "2025-07-28"
+author: "Supercode Team"
+category: "engineering"
+image: "/og-image2.png"
+featured: true
+---
+
+The best tools don't feel like tools. They feel like extensions of your hands.
+
+When we started building Supercode, we didn't set out to build "another AI coding assistant." We set out to build something that would make the terminal feel alive.
+
+## The problem
+
+Every developer has experienced this: you're deep in a feature, context switching between your editor, terminal, documentation, and Slack. You're productive, but you know you could be more productive if the tooling just... got out of the way.
+
+The existing AI coding tools at the time had a fundamental UX problem. They lived in your editor, which meant:
+
+- **They couldn't run your tests.** You'd ask for a fix, and then manually run the test suite.
+- **They couldn't search your codebase.** They worked on whatever file was open, not the full project.
+- **They couldn't deploy your changes.** The workflow stopped at "here's the code."
+
+We wanted to build something different. Something that could see your entire project, run your commands, and work alongside you — not just autocomplete your code.
+
+## Why the terminal
+
+The terminal is the most powerful interface on a computer. It's also the most underinvested in.
+
+Most developer tools try to replace the terminal with a GUI. We went the opposite direction. Supercode lives *in* your terminal because the terminal is where developers already are. It's where you run tests, deploy code, manage git, and execute the commands that actually ship software.
+
+By meeting developers where they already work, we eliminated the context switch. No new window. No new tab. No new mental model. Just a better version of what you're already doing.
+
+## What we learned
+
+Building an AI agent that actually works in the terminal taught us a lot about the difference between a demo and a product.
+
+### The small things compound
+
+A model returning correct code is table stakes. What matters is whether the tool *feels* right.
+
+We spent weeks on things users never consciously notice:
+
+- How fast the response streams in (we target < 100ms for the first token)
+- How the terminal renders output (smooth, no flicker)
+- How errors are displayed (clear, actionable, never a wall of red text)
+- How the agent recovers from mistakes (it retries, it explains, it doesn't spiral)
+
+These details are invisible when they work and painful when they don't. That's exactly why they matter.
+
+### Trust is earned through transparency
+
+AI agents make mistakes. The question is whether the user understands *what* the agent did and *why*.
+
+Every action Supercode takes is visible in your terminal. You see the commands it runs, the files it modifies, and the reasoning behind each decision. There's no "magic" — just clear, auditable work.
+
+This transparency isn't just a UX choice. It's a safety feature. When you can see exactly what the agent did, you can verify it, learn from it, and trust it.
+
+### The best UX is no UX
+
+The highest compliment a tool can receive is that the user forgets it's there. They're just... building.
+
+We measure success not by how many features we ship, but by how few interactions the user has to think about. The agent should feel like a pair programmer who's always one step ahead — anticipating what you need, running the tests before you ask, and cleaning up after itself.
+
+## What's next
+
+We're just getting started. The terminal is the tip of the iceberg.
+
+We're building toward a world where the boundary between "writing code" and "shipping software" disappears entirely. Where an AI agent can take a bug report, find the root cause, write the fix, run the tests, and deploy it — all while you focus on the hard problems that require human judgment.
+
+If you want to try it, Supercode is open source. Install it, run it, and tell us what you think. We're building this for developers, and that means building it *with* developers.
+
+```bash
+bun install -g supercode
+```

@@ -19,6 +19,10 @@ import { delegateTool, taskTool } from "./definitions/delegate.ts"
 import { questionTool } from "./definitions/question.ts"
 import { todowriteTool } from "./definitions/todowrite.ts"
 import { skillTool } from "./definitions/skill.ts"
+import { crispReviewTool } from "./definitions/crisp-review.ts"
+import { crispAuditTool } from "./definitions/crisp-audit.ts"
+import { crispDebtTool } from "./definitions/crisp-debt.ts"
+import { crispGainTool } from "./definitions/crisp-gain.ts"
 import { permissionManager } from "./permission-manager.ts"
 
 //
@@ -95,6 +99,10 @@ export const toolMeta: Record<string, ToolMeta> = {
   question: { category: "agent", requiresPermission: false, description: questionTool.description },
   todowrite: { category: "agent", requiresPermission: false, description: todowriteTool.description },
   skill: { category: "agent", requiresPermission: false, description: skillTool.description },
+  crisp_review: { category: "agent", requiresPermission: false, description: crispReviewTool.description },
+  crisp_audit: { category: "agent", requiresPermission: false, description: crispAuditTool.description },
+  crisp_debt: { category: "agent", requiresPermission: false, description: crispDebtTool.description },
+  crisp_gain: { category: "agent", requiresPermission: false, description: crispGainTool.description },
 }
 
 export const tools = {
@@ -118,4 +126,8 @@ export const tools = {
   question: defineTool(questionTool),
   todowrite: defineTool(todowriteTool),
   skill: defineTool(skillTool),
+  crisp_review: defineTool(crispReviewTool),
+  crisp_audit: defineTool(crispAuditTool),
+  crisp_debt: defineTool(crispDebtTool),
+  crisp_gain: defineTool(crispGainTool),
 }

@@ -180,6 +180,7 @@ export function buildSystemPrompt(info: WorkspaceInfo, hasTools = false): string
   lines.push("  string literal — strip the quotes before calling `url_fetch`.")
   lines.push("")
   pushSkillsSection(lines)
+  pushCrispSection(lines)
 
   lines.push("## Code Review & Analysis")
   lines.push("")
@@ -213,6 +214,69 @@ export function buildSystemPrompt(info: WorkspaceInfo, hasTools = false): string
   lines.push("bullet lists for observations. Be thorough — the user asked for a review,")
   lines.push("not a quick glance.")
   return lines.join("\n")
+}
+
+function pushCrispSection(lines: string[]): void {
+  const configPath = path.join(os.homedir(), ".config", "supercode", "cli-config.json")
+  let mode: string = "off"
+  try {
+    const data = fs.readFileSync(configPath, "utf-8")
+    const config = JSON.parse(data)
+    if (["off", "lite", "full", "ultra"].includes(config.crispMode)) {
+      mode = config.crispMode
+    }
+  } catch {}
+  if (mode === "off") return
+
+  const intensity: Record<string, string> = {
+    lite: "Apply these principles as helpful guidelines \u2014 prefer simplicity but don\u2019t over-enforce.",
+    full: "Apply these principles as binding constraints. Every abstraction, dependency, and pattern must be justified against this ladder.",
+    ultra: "Enforce these principles as hard constraints. The burden of proof is on the developer adding any complexity.",
+  }
+
+  lines.push("")
+  lines.push(`## Supercode Crisp (${mode}) \u2014 The Simplicity Ladder`)
+  lines.push("")
+  lines.push(intensity[mode] ?? "")
+  lines.push("")
+  lines.push("When writing or reviewing code, evaluate EVERY design decision against this ladder from top to bottom:")
+  lines.push("")
+  lines.push("1. **YAGNI** \u2014 You Aren\u2019t Gonna Need It. If it\u2019s not needed right now, don\u2019t build it. No future-proofing, no speculative abstractions.")
+  lines.push("   \u2192 Tag: [crisp:1]")
+  lines.push("")
+  lines.push("2. **Reuse what exists** \u2014 Before writing anything new, check if the language/stdlib/project already has it. Copy-paste-modify beats import-a-library.")
+  lines.push("   \u2192 Tag: [crisp:2]")
+  lines.push("")
+  lines.push("3. **Standard library first** \u2014 Use built-in APIs over third-party packages. OS features over npm/crates/pip.")
+  lines.push("   \u2192 Tag: [crisp:3]")
+  lines.push("")
+  lines.push("4. **Native platform APIs** \u2014 Prefer OS/platform built-ins over userland solutions. Shell over Python. CSS over JS. HTML over framework.")
+  lines.push("   \u2192 Tag: [crisp:4]")
+  lines.push("")
+  lines.push("5. **Dependencies are debt** \u2014 Every dependency is a liability. Before adding one: can you inline it? Can you strip it? Can you replace 50 lines of deps with 10 lines of code?")
+  lines.push("   \u2192 Tag: [crisp:5]")
+  lines.push("")
+  lines.push("6. **One line > many** \u2014 If you can express the logic in a single expression, do it. Each temporary variable is a concept the reader must hold in working memory.")
+  lines.push("   \u2192 Tag: [crisp:6]")
+  lines.push("")
+  lines.push("7. **Minimum code to satisfy the spec** \u2014 The best code is the code you didn\u2019t write. Delete unused imports. Remove dead branches.")
+  lines.push("   \u2192 Tag: [crisp:7]")
+  lines.push("")
+  lines.push("### How to apply")
+  lines.push("- When reviewing code, reference the rung number: [crisp:3] use URL constructor instead of parsing manually")
+  lines.push("- When adding an abstraction, ask: which rung of the ladder does this serve?")
+  lines.push("- When you see over-engineering, tag it: [crisp:1] YAGNI \u2014 this config system supports use cases that don\u2019t exist yet")
+  lines.push("- Tag ALL findings with [crisp:N] so the debt tracker can find them later")
+  lines.push("")
+
+  if (mode === "ultra") {
+    lines.push("### Ultra mode additions")
+    lines.push("- No new npm/crates/pip dependencies without explicit approval")
+    lines.push("- No new types/interfaces unless the function signature would be ambiguous without them")
+    lines.push("- No new files unless the existing file exceeds 400 lines")
+    lines.push("- Any abstraction must prove it eliminates more code than it adds (negative LoC)")
+    lines.push("")
+  }
 }
 
 function pushSkillsSection(lines: string[]): void {

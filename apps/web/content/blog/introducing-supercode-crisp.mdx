@@ -1,0 +1,131 @@
+---
+title: "Introducing Supercode Crisp: The Simplicity Ladder for AI Code"
+slug: "introducing-supercode-crisp"
+description: "AI generates too much code. Crisp fixes that — a 7-rung ladder that forces every line to earn its place."
+date: "2025-07-29"
+author: "Supercode Team"
+category: "product"
+image: "/supercode-crisp.png"
+featured: true
+---
+
+AI is the most powerful coding tool ever created. It's also one of the most wasteful.
+
+Ask an AI agent to add a config system, and it gives you an abstraction layer, a factory pattern, a TypeScript interface, and a config file parser — for a value that never changes. Ask it to fix a bug, and it wraps the whole thing in a try-catch with custom error classes.
+
+The code works. But it's bloated, slow, and hard to maintain. And every unnecessary line costs you tokens, build time, and cognitive load.
+
+We built **Supercode Crisp** to fix this.
+
+## The problem with AI-generated code
+
+LLMs are trained on the entire internet. That means they've learned every enterprise pattern, every abstraction layer, every design pattern that's ever been blogged about. When you ask for something simple, the model reaches for its full arsenal.
+
+The result: **AI consistently over-generates code by 4–10×.**
+
+A one-liner becomes 30 lines. A single function becomes five files. A dependency gets added for something you could write in four lines of code. And because it looks "enterprise-grade," it ships.
+
+This isn't a bug in the model — it's a feature working against you. The model optimizes for thoroughness, not minimalism. Without guardrails, every task becomes an architecture project.
+
+## What Crisp does
+
+Crisp is a **simplicity ladder** — a 7-rung framework that forces AI to evaluate every design decision against a hierarchy of simplicity before writing code.
+
+The ladder runs top-to-bottom:
+
+### Rung 1: YAGNI — You Aren't Gonna Need It
+
+If it's not needed right now, don't build it. No future-proofing. No speculative abstractions. No "what if we need this later."
+
+This is the most important rung because it prevents code from being written in the first place.
+
+### Rung 2: Reuse what exists
+
+Before writing anything new, check if the language, the stdlib, or the project already has it. Copy-paste-modify beats import-a-library.
+
+### Rung 3: Standard library first
+
+Use built-in APIs over third-party packages. OS features over npm/crates/pip. The standard library is the most battle-tested, most optimized code you have access to.
+
+### Rung 4: Native platform APIs
+
+Prefer OS/platform built-ins over userland solutions. Shell over Python. CSS over JS. HTML over framework. The platform already solved this.
+
+### Rung 5: Dependencies are debt
+
+Every dependency is a liability — it's code you don't own, can't control, and have to update forever. Before adding one: can you inline it? Can you strip it? Can you replace 50 lines of dependencies with 10 lines of code?
+
+### Rung 6: One line > many
+
+If you can express the logic in a single expression, do it. Each temporary variable is a concept the reader must hold in working memory.
+
+### Rung 7: Minimum code to satisfy the spec
+
+The best code is the code you didn't write. Delete unused imports. Remove dead branches. Ship the smallest diff that works.
+
+## What you get with Crisp
+
+When you enable Crisp, the AI stops reaching for enterprise patterns by default. Instead, it asks: *which rung of the ladder does this serve?*
+
+The impact is measurable:
+
+- **6–20% of original code size** for many tasks — what was 100 lines becomes 6–20
+- **47–77% reduction in dependencies** — fewer things to audit, update, and maintain
+- **3–6× faster builds** — less code means less to compile, bundle, and test
+- **Fewer tokens per task** — which means faster responses and lower cost
+
+The code that Crisp produces is shorter, faster, and easier to reason about. Not because it cuts corners, but because it refuses to add code that doesn't earn its place.
+
+## How to use Crisp
+
+Crisp is built into Supercode. Open your terminal and type:
+
+```
+/crisp full
+```
+
+That's it. Every subsequent AI session will apply the full simplicity ladder.
+
+### Modes
+
+| Mode | What it does |
+|---|---|
+| `/crisp off` | Crisp disabled (default) |
+| `/crisp lite` | Helpful guidelines, gentle nudges toward simplicity |
+| `/crisp full` | Binding constraints, every abstraction must be justified |
+| `/crisp ultra` | Hard constraints, burden of proof on complexity, YAGNI extremist |
+
+### Commands
+
+| Command | Description |
+|---|---|
+| `/crisp-review` | Review your current git diff against the simplicity ladder |
+| `/crisp-audit` | Audit your entire workspace for over-engineering patterns |
+| `/crisp-debt` | Find all `[crisp:N]` tagged shortcuts and deferred work |
+| `/crisp-gain` | See your impact scoreboard — lines saved, deps eliminated |
+
+### The tag system
+
+When Crisp reviews your code, it tags findings with `[crisp:N]` markers — where N is the ladder rung. This creates a visible debt ledger:
+
+```
+[crisp:1] YAGNI — this config system supports use cases that don't exist yet
+[crisp:5] Dependencies are debt — use URL constructor instead of parse-url package
+[crisp:6] One line > many — this 12-line function is a single .filter().map()
+```
+
+You can grep for these tags, track them over time, and systematically eliminate over-engineering from your codebase.
+
+## Why this matters
+
+AI is going to write most of our code. That's not a prediction — it's already happening. The question is whether that code will be clean or bloated, minimal or over-engineered, fast or slow.
+
+Without guardrails, AI defaults to complexity. Crisp is the guardrail. It doesn't make the AI less capable — it makes it more intentional. It forces the model to justify every line, every abstraction, every dependency.
+
+The result is code that's easier to maintain, faster to build, and cheaper to run. Not because a human sat there deleting lines, but because the AI learned to write the minimum code that satisfies the spec.
+
+Crisp is available now in Supercode. Install it, enable it, and see the difference.
+
+```bash
+bun install -g supercode
+```

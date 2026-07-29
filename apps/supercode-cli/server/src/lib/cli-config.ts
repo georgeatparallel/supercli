@@ -12,6 +12,7 @@ export interface CliConfig {
   provider: ModelProvider
   model: string
   mode: "chat" | "agent"
+  crispMode?: "off" | "lite" | "full" | "ultra"
   apiKeys?: Partial<Record<ModelProvider, string>>
   mcpServers?: Record<string, McpServerConfig>
   mcpCredentials?: Record<string, McpCredentials>
