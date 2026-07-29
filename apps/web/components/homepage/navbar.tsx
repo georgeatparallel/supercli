@@ -162,6 +162,7 @@ const Navbar = () => {
     { label: "Compare", href: "/compare" },
     { label: "Docs", href: DOCS_URL, external: true },
     { label: "Changelog", href: "/changelog" },
+    { label: "Blog", href: "/blog" },
     // { label: "Waitlist", href: "/waitlist", accent: true },
   ]
 

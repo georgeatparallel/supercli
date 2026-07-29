@@ -44,6 +44,12 @@ export const COMMANDS = [
   { cmd: "/mcp", desc: "Manage MCP connections (add, connect, toggle, remove)" },
   { cmd: "/connectors", desc: "Manage app connectors (Merge, Composer, etc.)" },
   { cmd: "/skills", desc: "List installed agent skills and view their SKILL.md" },
+  { cmd: "/crisp", desc: "Set crisp mode (on|lite|full|ultra|off) or show status" },
+  { cmd: "/crisp-review", desc: "Review git diff against the simplicity ladder" },
+  { cmd: "/crisp-audit", desc: "Audit workspace for over-engineering patterns" },
+  { cmd: "/crisp-debt", desc: "Find [crisp:N] tagged shortcuts / deferred work" },
+  { cmd: "/crisp-gain", desc: "Impact scoreboard — LOC, deps, simplification potential" },
+  { cmd: "/crisp-help", desc: "Quick reference for crisp commands" },
   { cmd: "/sk", desc: "Alias for /skills" },
 ]
 
@@ -129,6 +135,30 @@ const handlers: Record<string, (args: string) => Promise<SlashCommandResult>> = 
       return { type: "skills", message: result.message, skillName: result.skillName }
     }
     return { type: "skills" }
+  },
+  crisp: async (args) => {
+    const { crispCommand } = await import("./crisp.ts")
+    return crispCommand(args)
+  },
+  "crisp-review": async (args) => {
+    const { crispReviewCommand } = await import("./crisp-review.ts")
+    return crispReviewCommand(args)
+  },
+  "crisp-audit": async (args) => {
+    const { crispAuditCommand } = await import("./crisp-audit.ts")
+    return crispAuditCommand(args)
+  },
+  "crisp-debt": async () => {
+    const { crispDebtCommand } = await import("./crisp-debt.ts")
+    return crispDebtCommand("")
+  },
+  "crisp-gain": async (args) => {
+    const { crispGainCommand } = await import("./crisp-gain.ts")
+    return crispGainCommand(args)
+  },
+  "crisp-help": async () => {
+    const { crispHelpCommand } = await import("./crisp-help.ts")
+    return crispHelpCommand()
   },
   search: async (args) => ({ type: "message", message: chatify("search", args) }),
   scrape: async (args) => ({ type: "message", message: chatify("scrape", args) }),
