@@ -288,6 +288,7 @@ const Footer = () => {
               { label: "Brand", href: "/brand" },
               { label: "Contact", href: "/contact" },
               { label: "Blog", href: "/blog" },
+              { label: "Case Studies", href: "/case-study" },
               { label: "Privacy", href: "/#privacy" },
               { label: "Terms", href: "/#terms" },
             ]}
