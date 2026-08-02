@@ -13,7 +13,7 @@ export const metadata: Metadata = {
       "A complete payment migration for 100+ paying customers — zero downtime, zero lost revenue.",
     images: [
       {
-        url: "/supercode-ddp.png",
+        url: "/supercode-ddp2.png",
         width: 1200,
         height: 630,
         alt: "Supercode x Dodo Payments case study",
@@ -23,7 +23,7 @@ export const metadata: Metadata = {
   },
   twitter: {
     card: "summary_large_image",
-    images: ["/supercode-ddp.png"],
+    images: ["/supercode-ddp2.png"],
   },
 }
 
