@@ -1,6 +1,6 @@
 {
   "name": "supercode-cli",
-  "version": "0.1.92",
+  "version": "0.1.93",
   "description": "AI-powered coding agent CLI",
   "main": "dist/main.js",
   "bin": {
@@ -22,6 +22,9 @@
     "dist/main.js",
     "README.md"
   ],
+  "prisma": {
+    "seed": "bun run prisma/seed.ts"
+  },
   "publishConfig": {
     "access": "public"
   },
@@ -45,6 +48,7 @@
     "@ai-sdk/mcp": "^2.0.10",
     "@ai-sdk/openai-compatible": "^2.0.48",
     "@composio/core": "^0.13.1",
+    "@dodopayments/nextjs": "^0.3.7",
     "@modelcontextprotocol/sdk": "^1.9.0",
     "@prisma/adapter-pg": "^7.8.0",
     "@prisma/client": "^7.8.0",
@@ -57,6 +61,7 @@
     "chalk": "^5.6.2",
     "commander": "^15.0.0",
     "cors": "^2.8.5",
+    "dodopayments": "^2.43.0",
     "eve": "^0.22.5",
     "express": "^5.1.0",
     "marked": "^18.0.4",

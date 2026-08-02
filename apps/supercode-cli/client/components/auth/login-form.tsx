@@ -19,7 +19,9 @@ const LoginForm = () => {
 
   useEffect(() => {
     if (!isPending && data?.session) {
-      router.push("/")
+      const params = new URLSearchParams(window.location.search)
+      const redirect = params.get("redirect")
+      router.replace(redirect || "/")
     }
   }, [data, isPending, router])
 

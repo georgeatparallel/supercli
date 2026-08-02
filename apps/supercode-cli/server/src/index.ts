@@ -8,6 +8,12 @@ import { recordUsage } from "./lib/track-usage"
 import { computeCost } from "./lib/pricing"
 import { checkDailyTokenBudget } from "./lib/token-budget"
 import { registerAnalyticsRoutes } from "./routes/analytics"
+import plansRouter from "./api/billing/plans"
+import checkoutRouter from "./api/billing/checkout"
+import statusRouter from "./api/billing/status"
+import refundRouter from "./api/billing/refund"
+import webhookRouter from "./api/billing/webhook"
+import { checkPlanGate } from "./lib/plan-gate"
 import { transcribeAudio } from "./voice/speech"
 import { tmpdir } from "os"
 import { join } from "path"
@@ -125,6 +131,14 @@ app.use(
 )
 
 registerAnalyticsRoutes(app, prisma)
+
+app.use("/api/billing/plans", plansRouter)
+app.use("/api/billing/checkout", checkoutRouter)
+app.use("/api/billing/status", statusRouter)
+app.use("/api/billing/refund", refundRouter)
+app.use("/api/billing/webhook", webhookRouter)
+// Alias so the Dodo dashboard's configured webhook URL works as documented in the plan
+app.use("/api/webhooks/dodo-payments", webhookRouter)
 
 app.get("/api/data/users/count", async (_req, res) => {
   try {
@@ -314,6 +328,13 @@ app.post("/api/ai/chat", async (req, res) => {
     const { messages, provider, model: modelParam, tools } = req.body
     if (!messages || !Array.isArray(messages)) {
       res.status(400).json({ error: "Messages array is required" })
+      return
+    }
+
+    // Paid-tier enforcement: subscription → model access → request cap → credits
+    const gate = await checkPlanGate(user.id, modelParam ?? "deepseek-v4-flash")
+    if (!gate.allowed) {
+      res.status(403).json({ error: "plan_limit_exceeded", message: gate.message })
       return
     }
 

@@ -12,6 +12,26 @@ import {
 } from "src/lib/api-client.ts"
 import type { ModelMessage } from "ai"
 import { createProvider, type ModelProvider, type AIProvider } from "src/cli/ai/provider.ts"
+import { checkPlanGate } from "src/lib/plan-gate"
+
+/** Rough token estimate of the conversation context (chars / 4). */
+function estimateContextTokens(messages: ModelMessage[]): number {
+  try {
+    return Math.ceil(JSON.stringify(messages).length / 4)
+  } catch {
+    return 0
+  }
+}
+
+/** Loads the conversation transcript and estimates its token count. */
+async function loadContextTokens(conversationId: string): Promise<number> {
+  try {
+    const msgs = await getMessages(conversationId)
+    return estimateContextTokens(msgs as unknown as ModelMessage[])
+  } catch {
+    return 0
+  }
+}
 import {
   permissionManager,
   setCurrentAgent,
@@ -2040,9 +2060,15 @@ export async function chatLoop(
               messageCount++
               await addMessage(conversation.id, "user", triggerMsg)
               try {
-                const aiResult = await streamAIResponse(provider, conversation.id, conversation.mode, workspaceInfo, footer)
-                if (aiResult.aborted) {
-                  process.stdout.write(` ${chalk.hex(theme.muted)("response aborted")}\r\n\n`)
+                const totalTokens = await loadContextTokens(conversation.id)
+                const gate = await checkPlanGate(conversation.userId, provider.modelName, { totalTokens })
+                if (!gate.allowed) {
+                  process.stdout.write(`\r\n ${chalk.hex(theme.amber)("◆")} ${chalk.hex(theme.amber)(gate.message)}\r\n\n`)
+                } else {
+                  const aiResult = await streamAIResponse(provider, conversation.id, conversation.mode, workspaceInfo, footer)
+                  if (aiResult.aborted) {
+                    process.stdout.write(` ${chalk.hex(theme.muted)("response aborted")}\r\n\n`)
+                  }
                 }
               } catch (err: any) {
                 const msg = err.message || String(err)
@@ -2138,9 +2164,15 @@ export async function chatLoop(
             await trySetAutoTitle(conversation.id, result.message, messageCount)
           }
           try {
-            const aiResult = await streamAIResponse(provider, conversation.id, conversation.mode, workspaceInfo, footer)
-            if (aiResult.aborted) {
-              process.stdout.write(` ${chalk.hex(theme.muted)("response aborted")}\r\n\n`)
+            const totalTokens = await loadContextTokens(conversation.id)
+            const gate = await checkPlanGate(conversation.userId, provider.modelName, { totalTokens })
+            if (!gate.allowed) {
+              process.stdout.write(`\r\n ${chalk.hex(theme.amber)("◆")} ${chalk.hex(theme.amber)(gate.message)}\r\n\n`)
+            } else {
+              const aiResult = await streamAIResponse(provider, conversation.id, conversation.mode, workspaceInfo, footer)
+              if (aiResult.aborted) {
+                process.stdout.write(` ${chalk.hex(theme.muted)("response aborted")}\r\n\n`)
+              }
             }
             footer.renderLine()
           } catch (err: any) {
@@ -2214,6 +2246,13 @@ export async function chatLoop(
       }
 
       try {
+        const totalTokens = await loadContextTokens(conversation.id)
+        const gate = await checkPlanGate(conversation.userId, provider.modelName, { totalTokens })
+        if (!gate.allowed) {
+          process.stdout.write(`\r\n ${chalk.hex(theme.amber)("◆")} ${chalk.hex(theme.amber)(gate.message)}\r\n\n`)
+          footer.renderLine()
+          continue
+        }
         const result = await streamAIResponse(provider, conversation.id, conversation.mode, workspaceInfo, footer, fileContext)
 
         if (result.aborted) {
