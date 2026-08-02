@@ -44,7 +44,7 @@ export default function CaseStudyPage() {
               <div className="flex flex-col md:flex-row rounded-2xl border border-border bg-card overflow-hidden [@media(hover:hover)]:hover:bg-accent/30 active:scale-[0.98] transition-[background-color,border-color,transform] duration-150 ease-out">
                 <div className="relative shrink-0 md:w-[280px] aspect-[4/3] md:aspect-auto overflow-hidden bg-muted/50">
                   <img
-                    src="/supercode-ddp.png"
+                    src="/supercode-ddp2.png"
                     alt={`${study.company} x Dodo Payments`}
                     className="absolute inset-0 w-full h-full object-cover"
                   />
