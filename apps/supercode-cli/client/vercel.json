@@ -5,6 +5,14 @@
     {
       "source": "/api/auth/:path*",
       "destination": "https://supercode-8w7e.onrender.com/api/auth/:path*"
+    },
+    {
+      "source": "/api/billing/:path*",
+      "destination": "https://supercode-8w7e.onrender.com/api/billing/:path*"
+    },
+    {
+      "source": "/api/webhooks/:path*",
+      "destination": "https://supercode-8w7e.onrender.com/api/webhooks/:path*"
     }
   ]
 }

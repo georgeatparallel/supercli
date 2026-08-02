@@ -7,6 +7,13 @@ import Footer from "@/components/homepage/footer"
 import Link from "next/link"
 import { Check, Minus, ArrowUpRight } from "lucide-react"
 
+// Terminal client URL — where /studio lives. Override per environment.
+const TERMINAL_URL =
+  process.env.NEXT_PUBLIC_TERMINAL_URL ??
+  (process.env.NODE_ENV === "production"
+    ? "https://supercode-terminal.vercel.app"
+    : "http://localhost:3000")
+
 type Billing = "monthly" | "yearly"
 
 interface TierStats {
@@ -42,24 +49,24 @@ const TIERS: Tier[] = [
       monthly: "$1",
       yearly: "$1",
     },
-    period: "/year",
+    period: "/month",
     badge: "Free for existing users",
     badgeClass: "text-emerald-400",
     description:
-      "Open models, core features, standard limits. Just $1/year — fully refundable.",
+      "Open models, 10K requests, 16K context. $1/month for new users — fully refundable.",
     cta: "Get Started",
     href: "/download",
     popular: false,
     stats: {
-      requests: "~15K requests/month",
-      contextWindow: "32K",
+      requests: "~10K requests/month",
+      contextWindow: "16K",
       tokens: "Standard tokens",
       models: "Open models only",
     },
     features: [
       { label: "Open models only", included: true },
-      { label: "32K context window", included: true },
-      { label: "~15K requests/month", included: true },
+      { label: "16K context window", included: true },
+      { label: "~10K requests/month", included: true },
       { label: "Standard token limits", included: true },
       { label: "Standard rate limits", included: true },
       { label: "Limited usage analytics", included: true },
@@ -72,8 +79,8 @@ const TIERS: Tier[] = [
   {
     name: "Pro",
     price: {
-      monthly: { indian: "$9", international: "$12" },
-      yearly: { indian: "$100", international: "$140" },
+      monthly: { indian: "₹649", international: "$12" },
+      yearly: { indian: "₹8,300", international: "$140" },
     },
     period: "/month",
     badge: "Most popular",
@@ -81,7 +88,7 @@ const TIERS: Tier[] = [
     description:
       "Premium models, expanded context, cross-session memory, and Merge.dev Agent Handler.",
     cta: "Subscribe",
-    href: "#",
+    href: "https://test.checkout.dodopayments.com/buy/pdt_0Nk0vS5WMtkT7u2T7P70e?quantity=1",
     popular: true,
     stats: {
       requests: "~25K requests/month",
@@ -114,7 +121,7 @@ const TIERS: Tier[] = [
     description:
       "Maximum context, unlimited requests, premium models, and the highest availability.",
     cta: "Subscribe",
-    href: "#",
+    href: "https://test.checkout.dodopayments.com/buy/pdt_0NkRmfmsthQToUr41UAnd?quantity=1",
     popular: false,
     stats: {
       requests: "~110K requests/month",
@@ -151,11 +158,11 @@ const ENTERPRISE_FEATURES = [
 const FAQ = [
   {
     q: "What does the Spark $1 deposit cover?",
-    a: "Spark is $1/year for all new users — fully refundable. It is free for existing users. You can request a refund at any time.",
+    a: "Spark is $1/month for new users — fully refundable. It is free for existing (grandfathered) users with 10K requests, 16K context, and $5 monthly credits. Upgrade to Spark Premium ($1/month) for 15K requests, 32K context, and $10 credits.",
   },
   {
     q: "How does regional pricing work for Pro?",
-    a: "We offer location-based pricing for the Pro plan. Indian users pay $9/month (or $100/year). International users pay $12/month (or $140/year). All other plans are priced uniformly worldwide.",
+    a: "We offer location-based pricing for the Pro plan. Indian users pay ₹749/month (or ₹8,300/year) via UPI. International users pay $12/month (or $140/year) via card. All other plans are priced uniformly worldwide.",
   },
   {
     q: "Can I upgrade or downgrade at any time?",
@@ -187,10 +194,14 @@ function MinusIcon() {
   return <Minus className="w-3.5 h-3.5 text-muted-foreground/30 shrink-0 mt-0.5" />
 }
 
-function formatPrice(price: TierPrice, billing: Billing): string {
+function formatPrice(
+  price: TierPrice,
+  billing: Billing,
+  region: "in" | "int" = "in",
+): string {
   const p = billing === "monthly" ? price.monthly : price.yearly
   if (typeof p === "string") return p
-  return p.indian
+  return region === "in" ? p.indian : p.international
 }
 
 function formatPeriod(billing: Billing): string {
@@ -210,7 +221,7 @@ const COMPARE_ROWS: {
   {
     section: "Usage",
     label: "Monthly credits included",
-    values: ["$10", "$30", "$150"],
+    values: ["$5", "$30", "$150"],
   },
   {
     label: "DeepSeek V4 Pro effective usage\nPermanent deal — credits go up to 4× further",
@@ -226,7 +237,7 @@ const COMPARE_ROWS: {
   },
   {
     label: "Typical request volume\nApprox, depends on chosen models",
-    values: ["~15K", "~25K", "~110K"],
+    values: ["~10K", "~25K", "~110K"],
   },
   { label: "Roll-over unused credits", values: ["—", "✓", "✓"] },
   {
@@ -253,7 +264,7 @@ const COMPARE_ROWS: {
   },
   {
     label: "Context window per request",
-    values: ["32K tokens", "128K tokens", "1M tokens"],
+    values: ["16K tokens", "128K tokens", "1M tokens"],
   },
   {
     label: "Concurrent requests",
@@ -298,13 +309,20 @@ function PricingCard({
   tier,
   index,
   billing,
+  region,
+  onRegionChange,
 }: {
   tier: Tier
   index: number
   billing: Billing
+  region: "in" | "int"
+  onRegionChange: (region: "in" | "int") => void
 }) {
-  const effectiveBilling = tier.name === "Spark" ? "yearly" : billing
+  const effectiveBilling = tier.name === "Spark" ? "monthly" : billing
   const regional = isRegional(tier.price, effectiveBilling)
+
+  // All tier CTAs route to the terminal billing studio
+  const finalHref = `${TERMINAL_URL}/studio`
 
   return (
     <motion.div
@@ -336,7 +354,7 @@ function PricingCard({
 
       <div className="mb-1 mt-1">
         <span className="text-3xl md:text-4xl font-semibold text-foreground tracking-tight">
-          {formatPrice(tier.price, effectiveBilling)}
+          {formatPrice(tier.price, effectiveBilling, region)}
         </span>
         <span className="text-sm text-muted-foreground font-mono">
           {formatPeriod(effectiveBilling)}
@@ -346,7 +364,8 @@ function PricingCard({
             <span className="text-foreground/70">
               {formatPrice(
                 tier.price,
-                effectiveBilling === "monthly" ? ("monthly" as Billing) : ("yearly" as Billing)
+                effectiveBilling === "monthly" ? ("monthly" as Billing) : ("yearly" as Billing),
+                region,
               )}
             </span>
             {" IN · "}
@@ -359,6 +378,25 @@ function PricingCard({
           </div>
         )}
       </div>
+
+      {/* Region toggle (Pro only) */}
+      {tier.name === "Pro" && (
+        <div className="flex items-center gap-1 p-1 rounded-lg bg-white/[0.03] border border-white/5 mb-2 w-fit">
+          {(["in", "int"] as const).map((r) => (
+            <button
+              key={r}
+              onClick={() => onRegionChange(r)}
+              className={`px-2.5 py-1 rounded-md text-[11px] font-mono transition-all duration-200 ${
+                region === r
+                  ? "bg-amber-500 text-black"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              {r === "in" ? "IN 🇮🇳" : "INT 🌍"}
+            </button>
+          ))}
+        </div>
+      )}
 
       <h3 className="text-[15px] font-semibold text-foreground font-mono mt-5 mb-2">
         {tier.name}
@@ -376,7 +414,18 @@ function PricingCard({
       </div>
 
       <Link
-        href={tier.href}
+        href={finalHref}
+        target={finalHref.startsWith("http") ? "_blank" : undefined}
+        rel={finalHref.startsWith("http") ? "noopener noreferrer" : undefined}
+        onClick={(e) => {
+          // If this tier routes to the terminal /studio, keep it in the
+          // same tab — /studio handles the auth check and bounces to the
+          // terminal sign-in flow (root) when unauthenticated.
+          if (finalHref.startsWith(`${TERMINAL_URL}/`)) {
+            e.preventDefault()
+            window.location.href = finalHref
+          }
+        }}
         className={`inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-lg text-[13px] font-medium font-mono transition-all duration-200 active:scale-[0.97] mb-6 ${
           tier.popular
             ? "bg-amber-500 text-black hover:bg-amber-400"
@@ -506,6 +555,7 @@ function ComparisonTable() {
 
 export default function PricingPage() {
   const [billing, setBilling] = useState<Billing>("monthly")
+  const [region, setRegion] = useState<"in" | "int">("in")
   const [expandedFaq, setExpandedFaq] = useState<number | null>(null)
 
   return (
@@ -576,7 +626,14 @@ export default function PricingPage() {
       <section className="pb-20 md:pb-28 px-6">
         <div className="max-w-[1100px] mx-auto grid grid-cols-1 md:grid-cols-3 gap-5 md:gap-6">
           {TIERS.map((tier, i) => (
-            <PricingCard key={tier.name} tier={tier} index={i} billing={billing} />
+            <PricingCard
+              key={tier.name}
+              tier={tier}
+              index={i}
+              billing={billing}
+              region={region}
+              onRegionChange={setRegion}
+            />
           ))}
         </div>
       </section>

@@ -22,12 +22,14 @@ export const auth = betterAuth({
     github: {
       clientId: process.env.GITHUB_CLIENT_ID as string,
       clientSecret: process.env.GITHUB_CLIENT_SECRET as string,
-      ...(isProduction
-        ? {
-            redirectURI:
-              "https://supercode-terminal.vercel.app/api/auth/callback/github",
-          }
-        : {}),
+      ...(process.env.GITHUB_REDIRECT_URI
+        ? { redirectURI: process.env.GITHUB_REDIRECT_URI }
+        : isProduction
+          ? {
+              redirectURI:
+                "https://supercode-terminal.vercel.app/api/auth/callback/github",
+            }
+          : {}),
     },
   },
   plugins: [

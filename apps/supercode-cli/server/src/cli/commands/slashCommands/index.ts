@@ -50,6 +50,7 @@ export const COMMANDS = [
   { cmd: "/crisp-debt", desc: "Find [crisp:N] tagged shortcuts / deferred work" },
   { cmd: "/crisp-gain", desc: "Impact scoreboard — LOC, deps, simplification potential" },
   { cmd: "/crisp-help", desc: "Quick reference for crisp commands" },
+  { cmd: "/upgrade", desc: "Show upgrade options and open the billing studio" },
   { cmd: "/sk", desc: "Alias for /skills" },
 ]
 
@@ -159,6 +160,10 @@ const handlers: Record<string, (args: string) => Promise<SlashCommandResult>> = 
   "crisp-help": async () => {
     const { crispHelpCommand } = await import("./crisp-help.ts")
     return crispHelpCommand()
+  },
+  upgrade: async () => {
+    const { upgradeCommand } = await import("./upgrade.ts")
+    return upgradeCommand()
   },
   search: async (args) => ({ type: "message", message: chatify("search", args) }),
   scrape: async (args) => ({ type: "message", message: chatify("scrape", args) }),
