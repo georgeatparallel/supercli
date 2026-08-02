@@ -72,7 +72,7 @@ export default function DodoPaymentsCaseStudy() {
 
                 <div className="rounded-2xl overflow-hidden border border-border max-w-[640px]">
                   <img
-                    src="/supercode-ddp.png"
+                    src="/supercode-ddp2.png"
                     alt="Supercode x Dodo Payments case study banner"
                     className="w-full h-auto"
                   />
