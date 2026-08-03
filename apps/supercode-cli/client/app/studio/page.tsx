@@ -74,28 +74,9 @@ type CreditBalance = {
 const CHECKOUT_BASE =
   process.env.NEXT_PUBLIC_DODO_CHECKOUT_BASE ?? "https://checkout.dodopayments.com/buy"
 
-const PRODUCT_CHECKOUT_URLS: Record<string, string> = {
-  // ── test mode ──
-  pdt_0Nk0u6EggnAdDxGtoLa1W: `${CHECKOUT_BASE}/pdt_0Nk0u6EggnAdDxGtoLa1W?quantity=1`,
-  pdt_0NkRjph71bwF2z3aBulCG: `${CHECKOUT_BASE}/pdt_0Nk0vwfI1kYrDaRsQzEUQ?quantity=1`,
-  pdt_0Nk0vS5WMtkT7u2T7P70e: `${CHECKOUT_BASE}/pdt_0Nk0vS5WMtkT7u2T7P70e?quantity=1`,
-  pdt_0NkRm62YJBP043k9sEDab: `${CHECKOUT_BASE}/pdt_0NkRm62YJBP043k9sEDab?quantity=1`,
-  pdt_0Nk0vwfI1kYrDaRsQzEUQ: `${CHECKOUT_BASE}/pdt_0Nk0vwfI1kYrDaRsQzEUQ?quantity=1`,
-  pdt_0NkRmfmsthQToUr41UAnd: `${CHECKOUT_BASE}/pdt_0NkRmfmsthQToUr41UAnd?quantity=1`,
-  pdt_0NkRmxBRNTOME3FYF9Qkg: `${CHECKOUT_BASE}/pdt_0NkRmxBRNTOME3FYF9Qkg?quantity=1`,
-  // ── live mode ──
-  pdt_0NkW4k2cUeO1f7a8yLje5: `${CHECKOUT_BASE}/pdt_0NkW4k2cUeO1f7a8yLje5?quantity=1`,
-  pdt_0NkW59I3J7uy2m1j0RAOF: `${CHECKOUT_BASE}/pdt_0NkW59I3J7uy2m1j0RAOF?quantity=1`,
-  pdt_0NkW5Vvq7Uxw55sjMlDFe: `${CHECKOUT_BASE}/pdt_0NkW5Vvq7Uxw55sjMlDFe?quantity=1`,
-  pdt_0NkW5s9M64jbHMoKrIpsl: `${CHECKOUT_BASE}/pdt_0NkW5s9M64jbHMoKrIpsl?quantity=1`,
-  pdt_0NkW6PfRqqooJXIMaX4Ci: `${CHECKOUT_BASE}/pdt_0NkW6PfRqqooJXIMaX4Ci?quantity=1`,
-  pdt_0NkW6cjti170KbFpeolfw: `${CHECKOUT_BASE}/pdt_0NkW6cjti170KbFpeolfw?quantity=1`,
-  pdt_0NkW6tnjud9Sp1iGr9TXj: `${CHECKOUT_BASE}/pdt_0NkW6tnjud9Sp1iGr9TXj?quantity=1`,
-}
-
 function getCheckoutUrl(plan: Plan): string | null {
   if (!plan.dodoProductId) return null
-  return PRODUCT_CHECKOUT_URLS[plan.dodoProductId] ?? null
+  return `${CHECKOUT_BASE}/${plan.dodoProductId}?quantity=1`
 }
 
 const TIER_COLORS: Record<string, string> = {
@@ -314,7 +295,7 @@ function StudioPage() {
     if (!confirmingPlan || !userId) return
     const url = getCheckoutUrl(confirmingPlan)
     if (url) {
-      window.location.href = url
+      window.open(url, "_blank", "noopener,noreferrer")
     } else {
       setConfirmingPlan(null)
       toast.error("Checkout URL not available for this plan")
