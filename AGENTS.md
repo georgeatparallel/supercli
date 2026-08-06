@@ -110,7 +110,7 @@ packages/
 - Web app: `apps/web/.env` or `apps/.env.local`
 - Required for auth: `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `NEXT_PUBLIC_BETTER_AUTH_URL`
 - Required for DB: `DATABASE_URL`
-- Voice/STT: `ELEVENLABS_API_KEY` (default provider), `STT_PROVIDER` (`elevenlabs`|`groq`), `ELEVENLABS_MODEL`, `STT_LANGUAGE`
+- Voice/STT: `SMALLEST_API_KEY` (Smallest.ai Pulse STT — the only STT provider), `SMALLEST_MODEL`, `STT_LANGUAGE`. Voice TTS (spoken reply): `VOICE_REPLY` (`on`|`off`), `ELEVENLABS_VOICE_ID`, `ELEVENLABS_TTS_MODEL` (macOS `say` fallback when no key). Note `ELEVENLABS_API_KEY` doubles as both STT and TTS key historically; STT now always routes to Smallest.ai.
 - Secrets: `INFISICAL_CLIENT_ID`, `INFISICAL_CLIENT_SECRET` (when Infisical is configured)
 
 ### Linting

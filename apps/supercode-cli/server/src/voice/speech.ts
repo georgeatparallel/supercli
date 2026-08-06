@@ -1,7 +1,7 @@
 import { spawnSync, spawn, type ChildProcess } from "child_process"
 import { tmpdir } from "os"
 import { join } from "path"
-import { unlinkSync, readFileSync } from "fs"
+import { unlinkSync, readFileSync, writeFileSync } from "fs"
 import { randomUUID } from "crypto"
 import { getStoredToken } from "src/lib/token"
 
@@ -17,16 +17,20 @@ const STT_LANGUAGE = process.env.STT_LANGUAGE || "en"
 const GROQ_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 const GROQ_MODEL = process.env.GROQ_MODEL || "whisper-large-v3-turbo"
 
-
+/* smallest.ai provider (Pulse STT) */
+const SMALLEST_URL = "https://api.smallest.ai/waves/v1/stt/"
+const SMALLEST_MODEL = process.env.SMALLEST_MODEL || "pulse-pro"
+const SMALLEST_LANGUAGE = process.env.SMALLEST_LANGUAGE || STT_LANGUAGE || "en"
 
 const DEFAULT_MAX_DURATION_MS = 4_000
 
 let activeFfmpegProcess: ChildProcess | null = null
 
-export function getSttProvider(): "elevenlabs" | "groq" {
-  const raw = process.env.STT_PROVIDER || "elevenlabs"
-  if (raw === "groq") return "groq"
-  return "elevenlabs"
+export type SttProvider = "elevenlabs" | "groq" | "smallest"
+
+// Voice capture uses Smallest.ai (Pulse STT) exclusively.
+export function getSttProvider(): SttProvider {
+  return "smallest"
 }
 
 export function stopCapture(): void {
@@ -51,14 +55,8 @@ export function canVoiceCapture(): {
 } {
   if (!isFfmpegAvailable()) return { ok: false, reason: `ffmpeg not found at ${getFfmpegPath()}` }
 
-  const provider = getSttProvider()
-  if (provider === "groq") {
-    if (!process.env.GROQ_API_KEY && !process.env.SUPERCODE_SERVER_URL)
-      return { ok: false, reason: "GROQ_API_KEY not set and no server proxy configured" }
-  } else {
-    if (!process.env.ELEVENLABS_API_KEY && !process.env.SUPERCODE_SERVER_URL)
-      return { ok: false, reason: "ELEVENLABS_API_KEY not set and no server proxy configured" }
-  }
+  if (!process.env.SMALLEST_API_KEY && !process.env.SUPERCODE_SERVER_URL)
+    return { ok: false, reason: "SMALLEST_API_KEY not set and no server proxy configured" }
 
   return { ok: true }
 }
@@ -197,6 +195,48 @@ export async function transcribeGroq(filePath: string): Promise<string> {
   return data.text ?? ""
 }
 
+/* smallest.ai provider (Pulse STT) */
+export async function transcribeSmallest(filePath: string): Promise<string> {
+  const apiKey = process.env.SMALLEST_API_KEY
+  if (!apiKey) throw new Error("SMALLEST_API_KEY not configured")
+
+  const params = new URLSearchParams({
+    model: SMALLEST_MODEL,
+    language: SMALLEST_LANGUAGE,
+  })
+
+  const start = performance.now()
+  const res = await fetch(`${SMALLEST_URL}?${params.toString()}`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/octet-stream",
+    },
+    body: Bun.file(filePath),
+    signal: AbortSignal.timeout(30_000),
+  })
+
+  const body = await res.text().catch(() => "")
+  const elapsed = ((performance.now() - start) / 1000).toFixed(2)
+
+  if (!res.ok) {
+    throw new Error(`Smallest transcription error ${res.status}: ${body}`)
+  }
+
+  let data: { transcription?: string }
+  try {
+    data = JSON.parse(body) as { transcription?: string }
+  } catch {
+    throw new Error(`Smallest transcription invalid JSON: ${body}`)
+  }
+
+  if (data.transcription === undefined) {
+    throw new Error(`Smallest transcription missing "transcription": ${body}`)
+  }
+
+  return data.transcription
+}
+
 async function transcribeViaServer(filePath: string): Promise<string> {
   const serverUrl = process.env.SUPERCODE_SERVER_URL || "https://supercode-8w7e.onrender.com"
   const token = await getStoredToken()
@@ -227,18 +267,99 @@ async function transcribeViaServer(filePath: string): Promise<string> {
 }
 
 export async function transcribeAudio(filePath: string): Promise<string> {
-  const provider = getSttProvider()
-
-  if (provider === "groq") {
-    if (process.env.GROQ_API_KEY) return transcribeGroq(filePath)
-    return transcribeViaServer(filePath)
-  }
-
-  if (process.env.ELEVENLABS_API_KEY) return transcribeElevenLabs(filePath)
+  if (process.env.SMALLEST_API_KEY) return transcribeSmallest(filePath)
   return transcribeViaServer(filePath)
 }
 
-const SOUND_DESCRIPTION_RE = /\([^)]*?(?:noise|clicking|static|background|sound|audio|speaking|unintelligible|laughs?|coughs?|clears?\s+(?:throat|voice)|throat|pause|music|beep|tone|silence|indistinct|foreign|applause|sniffling|sighs?|breathing|rustling|mumbling|chatter|echo)[^)]*?\)/gi
+// ─── Text-to-speech (spoken reply) ──────────────────────────────────────────
+const ELEVENLABS_TTS_URL = "https://api.elevenlabs.io/v1/text-to-speech"
+const ELEVENLABS_VOICE_ID = process.env.ELEVENLABS_VOICE_ID || "21m00Tcm4TlvDq8ikWAM"
+const ELEVENLABS_TTS_MODEL = process.env.ELEVENLABS_TTS_MODEL || "eleven_turbo_v2_5"
+const SPEECH_MAX_CHARS = 3000
+const VOICE_REPLY_ENABLED = (process.env.VOICE_REPLY ?? "on").toLowerCase() !== "off"
+
+export function isTtsAvailable(): boolean {
+  if (!VOICE_REPLY_ENABLED) return false
+  // Spoken replies are played back with macOS `afplay` / `say`
+  return process.platform === "darwin"
+}
+
+// Strip markdown so the reply reads naturally instead of reading code verbatim.
+export function stripForSpeech(text: string): string {
+  return text
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/`([^`]*)`/g, "$1")
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/^\s*[-*+]\s+/gm, "")
+    .replace(/[#*_~>|]/g, "")
+    .replace(/^\s{2,}/gm, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim()
+    .slice(0, SPEECH_MAX_CHARS)
+}
+
+function playAudioFile(filePath: string): Promise<void> {
+  return new Promise((resolve) => {
+    const proc = spawn("afplay", [filePath])
+    proc.on("exit", () => {
+      try { unlinkSync(filePath) } catch {}
+      resolve()
+    })
+    proc.on("error", () => {
+      try { unlinkSync(filePath) } catch {}
+      resolve()
+    })
+  })
+}
+
+function speakWithSay(text: string): Promise<void> {
+  return new Promise((resolve) => {
+    const proc = spawn("say", [])
+    proc.on("exit", () => resolve())
+    proc.on("error", () => resolve())
+    proc.stdin?.write(text)
+    proc.stdin?.end()
+  })
+}
+
+export async function speakText(text: string): Promise<void> {
+  if (!isTtsAvailable()) return
+  const clean = stripForSpeech(text)
+  if (!clean) return
+
+  const apiKey = process.env.ELEVENLABS_API_KEY
+  if (!apiKey) {
+    // Local fallback — no API key needed
+    await speakWithSay(clean)
+    return
+  }
+
+  try {
+    const res = await fetch(`${ELEVENLABS_TTS_URL}/${ELEVENLABS_VOICE_ID}`, {
+      method: "POST",
+      headers: {
+        "xi-api-key": apiKey,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ text: clean, model_id: ELEVENLABS_TTS_MODEL }),
+      signal: AbortSignal.timeout(30_000),
+    })
+    if (!res.ok) {
+      const body = await res.text().catch(() => "")
+      throw new Error(`ElevenLabs TTS error ${res.status}: ${body}`)
+    }
+    const bytes = new Uint8Array(await res.arrayBuffer())
+    const tmpFile = join(tmpdir(), `tts-${randomUUID()}.mp3`)
+    writeFileSync(tmpFile, bytes)
+    await playAudioFile(tmpFile)
+  } catch {
+    // Fall back to local `say` on any network/fetch failure
+    await speakWithSay(clean)
+  }
+}
+
+const SOUND_DESCRIPTION_RE = /\([^)]*?(?:noise|clicking|static|static|background|sound|audio|speaking|unintelligible|laughs?|coughs?|clears?\s+(?:throat|voice)|throat|pause|music|beep|tone|silence|indistinct|foreign|applause|sniffling|sighs?|breathing|rustling|mumbling|chatter|echo)[^)]*?\)/gi
 
 function sanitizeTranscription(text: string): string {
   return text.replace(SOUND_DESCRIPTION_RE, "").trim()

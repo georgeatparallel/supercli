@@ -44,17 +44,27 @@ The AI has access to file reading, searching, web fetching, and code execution t
 
 ### Voice Input
 
-Voice capture requires `ffmpeg` and an STT provider API key.
+Voice capture requires `ffmpeg` and a Smallest.ai API key.
 
 | Env Var | Description | Default |
 |---|---|---|
-| `STT_PROVIDER` | STT provider (`elevenlabs` or `groq`) | `elevenlabs` |
-| `ELEVENLABS_API_KEY` | ElevenLabs API key (required for ElevenLabs STT) | — |
-| `ELEVENLABS_MODEL` | ElevenLabs model ID | `scribe_v1` |
-| `GROQ_API_KEY` | Groq API key (required when `STT_PROVIDER=groq`) | — |
-| `STT_LANGUAGE` | Transcription language | `en` |
+| `SMALLEST_API_KEY` | Smallest.ai API key (https://app.smallest.ai/dashboard/api-keys) | — |
+| `SMALLEST_MODEL` | Smallest.ai STT model | `pulse-pro` |
+| `SMALLEST_LANGUAGE` | Transcription language | `en` |
 
-Press **Ctrl+Shift+V** during a chat session to start voice capture.
+### Voice Reply (speaks the answer back)
+
+After a voice-triggered turn, supercode reads the assistant's reply aloud using
+ElevenLabs TTS when a key is available, otherwise macOS `say`. macOS only.
+
+| Env | Description | Default |
+|---|---|---|
+| `VOICE_REPLY` | Enable spoken replies (`on`/`off`) | `on` |
+| `ELEVENLABS_VOICE_ID` | ElevenLabs TTS voice | `21m00Tcm4TlvDq8ikWAM` |
+| `ELEVENLABS_TTS_MODEL` | ElevenLabs TTS model | `eleven_turbo_v2_5` |
+
+Press **Ctrl+V** (or **F2**) during a chat session to start voice capture. The
+captured command is run as a normal agent turn, then the reply is spoken back.
 
 ## License
 

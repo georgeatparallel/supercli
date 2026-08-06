@@ -9,7 +9,7 @@ import { theme, heavyDivider } from "src/cli/utils/tui.ts"
 import type { ModelProvider } from "src/cli/ai/provider.ts"
 
 export interface SlashCommandResult {
-  type: "model_change" | "help" | "unknown" | "exit" | "connect" | "context" | "compact" | "plan" | "scratch" | "skills" | "voice" | "verbose" | "message" | "clear" | "new_conversation"
+  type: "model_change" | "help" | "unknown" | "exit" | "connect" | "context" | "compact" | "plan" | "scratch" | "skills" | "voice" | "jarvis" | "verbose" | "message" | "clear" | "new_conversation"
   provider?: ModelProvider
   model?: string
   label?: string
@@ -29,6 +29,7 @@ export const COMMANDS = [
   { cmd: "/plan", desc: "Switch to plan mode (read-only)" },
   { cmd: "/scratch", desc: "List/show/delete subagent artifacts in .super/scratch/" },
   { cmd: "/voice", desc: "Capture voice input via microphone" },
+  { cmd: "/jarvis", desc: "Wake Jarvis — start the daily workspace apps" },
   { cmd: "/verbose", desc: "Toggle live tool call debug logs" },
   { cmd: "/search", desc: "Search the web via Firecrawl" },
   { cmd: "/scrape", desc: "Scrape a URL via Firecrawl" },
@@ -101,6 +102,9 @@ const handlers: Record<string, (args: string) => Promise<SlashCommandResult>> = 
   },
   voice: async () => {
     return { type: "voice" }
+  },
+  jarvis: async () => {
+    return { type: "jarvis" }
   },
   verbose: async () => {
     return { type: "verbose" }
