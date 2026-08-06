@@ -24,6 +24,10 @@ export function tierIndex(tier: string): number {
 /**
  * Checks whether a model slug is allowed for the user's plan tier.
  * Model gating is backed by the `Model` table's `minTier` field.
+ *
+ * Tier ladder: spark < spark-premium < pro < ultra
+ * Open models use minTier "spark" so both Spark and Spark Premium get them.
+ * Spark Premium is the paid open-models tier (higher limits/credits, same catalog).
  */
 export async function isModelAllowedForTier(
   modelSlug: string,
@@ -31,9 +35,17 @@ export async function isModelAllowedForTier(
 ): Promise<boolean> {
   try {
     const models = await ensureCache()
-    const model = models.find(
-      (m) => m.slug === modelSlug || modelSlug.includes(m.slug),
-    )
+    const normalized = modelSlug.trim().toLowerCase()
+    const model = models.find((m) => {
+      const slug = m.slug.toLowerCase()
+      return (
+        slug === normalized ||
+        normalized === slug ||
+        normalized.endsWith(`/${slug}`) ||
+        normalized.includes(slug) ||
+        slug.includes(normalized)
+      )
+    })
     if (!model) return false
     return tierIndex(userTier) >= tierIndex(model.minTier)
   } catch (error) {
@@ -43,8 +55,11 @@ export async function isModelAllowedForTier(
 }
 
 export function getUpgradeSuggestion(userTier: string): string {
+  if (tierIndex(userTier) < tierIndex("spark-premium")) {
+    return "To access more open models and higher limits, run /upgrade (Spark Premium)"
+  }
   if (tierIndex(userTier) < tierIndex("pro")) {
-    return "To access premium models, run /upgrade"
+    return "To access premium models (Claude, GPT, etc.), run /upgrade"
   }
   if (tierIndex(userTier) < tierIndex("ultra")) {
     return "To access all models unrestricted, run /upgrade"
