@@ -71,14 +71,6 @@ type CreditBalance = {
   resetAt: string | null
 }
 
-const CHECKOUT_BASE =
-  process.env.NEXT_PUBLIC_DODO_CHECKOUT_BASE ?? "https://checkout.dodopayments.com/buy"
-
-function getCheckoutUrl(plan: Plan): string | null {
-  if (!plan.dodoProductId) return null
-  return `${CHECKOUT_BASE}/${plan.dodoProductId}?quantity=1`
-}
-
 const TIER_COLORS: Record<string, string> = {
   spark: "text-emerald-400 border-emerald-500/30",
   "spark-premium": "text-cyan-400 border-cyan-500/30",
@@ -293,12 +285,25 @@ function StudioPage() {
 
   const handleConfirmPayNow = useCallback(async () => {
     if (!confirmingPlan || !userId) return
-    const url = getCheckoutUrl(confirmingPlan)
-    if (url) {
-      window.open(url, "_blank", "noopener,noreferrer")
-    } else {
+    if (!confirmingPlan.dodoProductId) {
       setConfirmingPlan(null)
       toast.error("Checkout URL not available for this plan")
+      return
+    }
+    try {
+      const res = await fetch("/api/billing/checkout", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId, planId: confirmingPlan.id }),
+      })
+      const data = await res.json()
+      if (!res.ok || !data.checkout_url) {
+        throw new Error(data.error ?? "Failed to create checkout session")
+      }
+      window.location.href = data.checkout_url as string
+    } catch (err) {
+      setConfirmingPlan(null)
+      toast.error(err instanceof Error ? err.message : "Checkout failed")
     }
   }, [confirmingPlan, userId])
 
