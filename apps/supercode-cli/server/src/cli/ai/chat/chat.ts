@@ -85,7 +85,9 @@ import {
   voiceCaptureFlow,
   canVoiceCapture,
   stopCapture,
+  speakText,
 } from "src/voice/speech.ts"
+import { isJarvisWake, runJarvisStart } from "src/voice/jarvis.ts"
 import path from "node:path"
 import { AtPicker, DragDropTracker } from "./at-picker.ts"
 import {
@@ -110,6 +112,21 @@ async function getUserFromToken() {
 
   thinking.succeed(`Welcome, ${result.user.name}`)
   return result.user
+}
+
+// Store the current user for feature gating
+let currentUser: { id: string; name: string | null; email: string } | null = null
+
+// Check if the current user is Yash Dewasthale (for feature gating)
+function isYashDewasthale(): boolean {
+  if (!currentUser) return false
+  const name = currentUser.name?.toLowerCase() ?? ""
+  const email = currentUser.email?.toLowerCase() ?? ""
+  return (
+    name.includes("yash") && name.includes("dewasthale") ||
+    email === "yashdev.yvd@gmail.com" ||
+    email === "yash@supercode.ai"
+  )
 }
 
 export async function initConversation(userId: string, conversationId: string | null = null, mode = "chat") {
@@ -967,6 +984,10 @@ let stdinPrevWrapLines = 1
 // transcribed text instead of wiping stdinInput to "".
 let voiceJustCaptured = false
 
+// Set when a voice capture auto-submits (Clicky-style) so the loop can speak
+// the reply back once the assistant turn finishes. Consumed at most once.
+let voiceAutoSubmitted = false
+
 // Loaded skill context — injected as a system message so the AI uses it
 // without pasting the full text into the user's input.
 export let loadedSkillName: string | undefined
@@ -1309,48 +1330,7 @@ function stdinKeypress(_str: string, key: any) {
       return
     }
 
-    const resolve = stdinResolve
-    stdinResolve = null
-    // Clear slash list (content below input line)
-    for (let i = 0; i < slashListLines; i++) {
-      readline.moveCursor(process.stdout, 0, 1)
-    }
-    for (let i = 0; i < slashListLines; i++) {
-      readline.cursorTo(process.stdout, 0)
-      readline.clearLine(process.stdout, 0)
-      if (i < slashListLines - 1) {
-        readline.moveCursor(process.stdout, 0, -1)
-      }
-    }
-    slashListLines = 0
-    // Clear @ picker overlay
-    atPicker.close()
-    for (let i = 0; i < atListLines; i++) {
-      readline.moveCursor(process.stdout, 0, 1)
-    }
-    for (let i = 0; i < atListLines; i++) {
-      readline.cursorTo(process.stdout, 0)
-      readline.clearLine(process.stdout, 0)
-      if (i < atListLines - 1) {
-        readline.moveCursor(process.stdout, 0, -1)
-      }
-    }
-    atListLines = 0
-    // Clear drag-drop indicator
-    for (let i = 0; i < ddListLines; i++) {
-      readline.moveCursor(process.stdout, 0, 1)
-    }
-    for (let i = 0; i < ddListLines; i++) {
-      readline.cursorTo(process.stdout, 0)
-      readline.clearLine(process.stdout, 0)
-      if (i < ddListLines - 1) {
-        readline.moveCursor(process.stdout, 0, -1)
-      }
-    }
-    ddListLines = 0
-    ddTracker.clear()
-    process.stdout.write("\r\n")
-    resolve({ input: stdinInput, mode: stdinMode })
+    commitInput()
     return
   }
 
@@ -1566,6 +1546,11 @@ function stdinKeypress(_str: string, key: any) {
 }
 
 async function startVoiceCapture() {
+  if (!isYashDewasthale()) {
+    activeFooter?.setStatusMessage("⛭ Voice features are only available for Yash Dewasthale")
+    setTimeout(() => activeFooter?.setStatusMessage(""), 4000)
+    return
+  }
   const check = canVoiceCapture()
   if (!check.ok) {
     const reason = check.reason ?? "unknown"
@@ -1575,22 +1560,115 @@ async function startVoiceCapture() {
   }
   const prevMode = voiceCaptureActive
   voiceCaptureActive = true
-    activeFooter?.setStatusMessage("🎤 Recording... (voice key or Enter to stop)")
+  activeFooter?.setStatusMessage("🎤 Recording... (voice key or Enter to stop)")
   try {
     const text = await voiceCaptureFlow()
     if (text) {
+      if (isJarvisWake(text)) {
+        // Wake-word caught — don't submit an agent turn, just start the
+        // workspace, speak a confirmation, and print the open summary.
+        const opened = await runJarvisAndSpeak()
+        process.stdout.write(
+          `\r\n ${chalk.hex(theme.green)("◆")} ${chalk.hex(theme.amber)("Jarvis")} woke — opening: ${opened.join(", ") || "none configured"}\r\n\n`,
+        )
+        if (stdinResolve) renderInput()
+        else voiceJustCaptured = true
+        return
+      }
       stdinInput =
         stdinInput.slice(0, stdinCursor) + text + " " + stdinInput.slice(stdinCursor)
       stdinCursor += text.length + 1
+      slashSelected = -1
+      historyIndex = -1
+      if (stdinResolve) {
+        // Loop is idle awaiting input — Clicky-style: auto-submit the spoken
+        // command so the agent actually does the thing and speaks back.
+        voiceAutoSubmitted = true
+        commitInput()
+      } else {
+        // Agent is busy — just fill the input so the user can review/send later.
+        voiceJustCaptured = true
+      }
     } else {
       activeFooter?.setStatusMessage("🎤 No speech detected — press voice key to retry")
+      setTimeout(() => activeFooter?.setStatusMessage(""), 4000)
+      // Nothing was submitted — restore the input prompt in place.
+      if (stdinResolve) renderInput()
     }
   } catch (err) {
     activeFooter?.setStatusMessage("⛭ Voice failed: " + (err instanceof Error ? err.message : err))
     setTimeout(() => activeFooter?.setStatusMessage(""), 4000)
+    if (stdinResolve) renderInput()
   } finally {
     voiceCaptureActive = prevMode
   }
+}
+
+// Wake Jarvis: launch the configured workspace targets in the default browser,
+// speak a short confirmation, and report the status line for text. Returns the
+// names that opened successfully.
+async function runJarvisAndSpeak(): Promise<string[]> {
+  if (!isYashDewasthale()) {
+    return []
+  }
+  const { opened } = runJarvisStart()
+  const reply = opened.length
+    ? `Jarvis online. Opening ${opened.slice(0, 3).join(", ")}${opened.length > 3 ? " and more" : ""}.`
+    : "Jarvis online, but no workspace apps are configured."
+  activeFooter?.setStatusMessage(`🤖 Jarvis online · ${opened.length} app${opened.length === 1 ? "" : "s"} opening`)
+  setTimeout(() => activeFooter?.setStatusMessage(""), 6000)
+  await speakText(reply)
+  return opened
+}
+
+// Commit whatever stdinInput currently holds as a submitted chat turn. Shared
+// by the Enter key and the Clicky-style voice auto-execute path so both clear
+// the input overlays (slash list, @ picker, drag-drop) and resolve the
+// pending chatInput() promise identically.
+function commitInput(): void {
+  const resolve = stdinResolve
+  if (!resolve) return
+  stdinResolve = null
+  // Clear slash list (content below input line)
+  for (let i = 0; i < slashListLines; i++) {
+    readline.moveCursor(process.stdout, 0, 1)
+  }
+  for (let i = 0; i < slashListLines; i++) {
+    readline.cursorTo(process.stdout, 0)
+    readline.clearLine(process.stdout, 0)
+    if (i < slashListLines - 1) {
+      readline.moveCursor(process.stdout, 0, -1)
+    }
+  }
+  slashListLines = 0
+  // Clear @ picker overlay
+  atPicker.close()
+  for (let i = 0; i < atListLines; i++) {
+    readline.moveCursor(process.stdout, 0, 1)
+  }
+  for (let i = 0; i < atListLines; i++) {
+    readline.cursorTo(process.stdout, 0)
+    readline.clearLine(process.stdout, 0)
+    if (i < atListLines - 1) {
+      readline.moveCursor(process.stdout, 0, -1)
+    }
+  }
+  atListLines = 0
+  // Clear drag-drop indicator
+  for (let i = 0; i < ddListLines; i++) {
+    readline.moveCursor(process.stdout, 0, 1)
+  }
+  for (let i = 0; i < ddListLines; i++) {
+    readline.cursorTo(process.stdout, 0)
+    readline.clearLine(process.stdout, 0)
+    if (i < ddListLines - 1) {
+      readline.moveCursor(process.stdout, 0, -1)
+    }
+  }
+  ddListLines = 0
+  ddTracker.clear()
+  process.stdout.write("\r\n")
+  resolve({ input: stdinInput, mode: stdinMode })
 }
 
 function ensureStdinHandler() {
@@ -2048,6 +2126,17 @@ export async function chatLoop(
           // (via setImmediate) so the text should already be visible.
           voiceJustCaptured = true
           process.stdout.write(`\r\n`)
+        } else if (result?.type === "jarvis") {
+          if (!isYashDewasthale()) {
+            process.stdout.write(
+              `\r\n ${chalk.hex(theme.red)("◆")} ${chalk.hex(theme.red)("Jarvis is only available for Yash Dewasthale")}\r\n\n`,
+            )
+          } else {
+            const opened = await runJarvisAndSpeak()
+            process.stdout.write(
+              `\r\n ${chalk.hex(theme.green)("◆")} ${chalk.hex(theme.amber)("Jarvis")} woke — opening: ${opened.join(", ") || "none configured"}\r\n\n`,
+            )
+          }
         } else if (result?.type === "skills") {
           if (result.skillName && result.message) {
             loadedSkillName = result.skillName
@@ -2259,6 +2348,7 @@ export async function chatLoop(
           if (result.content && result.content !== "(cancelled)") {
             await addMessage(conversation.id, "assistant", result.content)
           }
+          voiceAutoSubmitted = false
           process.stdout.write(`\r\n ${chalk.hex(theme.amber)("◆")} cancelled\r\n`)
           continue
         }
@@ -2291,10 +2381,16 @@ export async function chatLoop(
               footer,
             )
             if (agentResult.aborted) {
+              voiceAutoSubmitted = false
               process.stdout.write(`\r\n ${chalk.hex(theme.amber)("◆")} cancelled\r\n`)
               continue
             }
             await addMessage(conversation.id, "assistant", agentResult.content)
+            if (voiceAutoSubmitted) {
+              voiceAutoSubmitted = false
+              process.stdout.write("\r\n")
+              await speakText(agentResult.content)
+            }
             lastUsage = agentResult.usage
             lastElapsed = agentResult.elapsed
             await maybeCompactConversation(conversation.id)
@@ -2303,6 +2399,11 @@ export async function chatLoop(
         }
 
         await addMessage(conversation.id, "assistant", result.content)
+        if (voiceAutoSubmitted) {
+          voiceAutoSubmitted = false
+          process.stdout.write("\r\n")
+          await speakText(result.content)
+        }
 
         // Phase 8: in plan mode, persist the assistant's response to scratch
         // so /plan execute can pick it up.
@@ -2326,6 +2427,7 @@ export async function chatLoop(
         await maybeCompactConversation(conversation.id)
       } catch (error: any) {
         const errMsg = error?.message ?? "Unknown error"
+        voiceAutoSubmitted = false
         process.stdout.write(`\r\n ${chalk.hex(theme.red)("◆")} ${chalk.hex(theme.red)(errMsg)}\r\n\n`)
       } finally {
         clearSkill()
@@ -2394,6 +2496,7 @@ export async function startChat(
     console.log()
 
     const user = await getUserFromToken()
+    currentUser = user
     const conversation = await initConversation(user.id, conversationId, initialMode)
 
     await chatLoop(aiProvider, conversation, workspaceInfo)
