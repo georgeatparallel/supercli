@@ -1,17 +1,10 @@
 import { Router } from "express"
 import prisma from "../../lib/prisma"
-import { DodoPayments } from "dodopayments"
+import { getDodo } from "../../lib/dodo"
 import { invalidateModelCache } from "../../lib/model-access"
 import type { Prisma } from "../../generated"
 
 const router = Router()
-
-function getDodo(): DodoPayments | null {
-  const key = process.env.DODO_PAYMENTS_API_KEY
-  const webhookKey = process.env.DODO_PAYMENTS_WEBHOOK_KEY
-  if (!key) return null
-  return new DodoPayments({ bearerToken: key, webhookKey })
-}
 
 // ── Event shapes (mirrors dodopayments SDK types) ──
 
@@ -361,7 +354,7 @@ router.post("/", async (req, res) => {
   try {
     const body = typeof req.body === "string" ? req.body : JSON.stringify(req.body)
 
-    const dodo = getDodo()
+    const dodo = getDodo({ webhookKey: true })
     if (!dodo) {
       console.error("[webhook] Dodo keys not configured — cannot verify webhook")
       res.status(503).json({ received: false })

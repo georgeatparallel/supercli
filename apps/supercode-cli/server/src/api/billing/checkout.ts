@@ -1,14 +1,8 @@
 import { Router } from "express"
 import prisma from "../../lib/prisma"
-import { DodoPayments } from "dodopayments"
+import { getDodo, getDodoEnvironment } from "../../lib/dodo"
 
 const router = Router()
-
-function getDodo(): DodoPayments | null {
-  const key = process.env.DODO_PAYMENTS_API_KEY
-  if (!key) return null
-  return new DodoPayments({ bearerToken: key })
-}
 
 function studioUrl(path: string): string {
   const clientUrl = process.env.CLIENT_URL || "http://localhost:3000"
@@ -87,6 +81,17 @@ router.post("/", async (req, res) => {
     })
   } catch (error) {
     console.error("[billing/checkout] Checkout creation failed:", error)
+    const message = error instanceof Error ? error.message : String(error)
+    const mode = getDodoEnvironment()
+    const looksMissing =
+      /not found|404|invalid product|product_id/i.test(message)
+    if (looksMissing) {
+      res.status(400).json({
+        error:
+          `Dodo product not found in ${mode}. Re-seed plans with DODO_MODE=${mode === "test_mode" ? "test" : "live"} so dodoProductId matches this mode.`,
+      })
+      return
+    }
     res.status(500).json({ error: "Failed to create checkout session" })
   }
 })

@@ -1,14 +1,8 @@
 import { Router } from "express"
 import prisma from "../../lib/prisma"
-import { DodoPayments } from "dodopayments"
+import { getDodo } from "../../lib/dodo"
 
 const router = Router()
-
-function getDodo(): DodoPayments | null {
-  const key = process.env.DODO_PAYMENTS_API_KEY
-  if (!key) return null
-  return new DodoPayments({ bearerToken: key })
-}
 
 function studioUrl(path: string): string {
   const clientUrl = process.env.CLIENT_URL || "http://localhost:3000"
