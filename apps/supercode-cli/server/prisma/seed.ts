@@ -162,10 +162,14 @@ const PLANS = [
 ]
 
 const MODELS = [
-  // ── Spark / Spark Premium (minTier: "spark") ──
+  // ── Spark / Spark Premium (minTier: "spark") — all open / cloud free models ──
+  // Spark Premium uses the same open catalog (higher limits/credits); gating is by tier order.
   { slug: "deepseek-v4-flash",         displayName: "DeepSeek V4 Flash",       provider: "deepseek",   minTier: "spark", inputPrice: 0.15,  outputPrice: 0.60,  cachedPrice: 0 },
   { slug: "deepseek/deepseek-v4-flash", displayName: "DeepSeek V4 Flash (OR)",  provider: "openrouter", minTier: "spark", inputPrice: 0.15,  outputPrice: 0.60,  cachedPrice: 0 },
+  { slug: "hy3",                       displayName: "Hunyuan Hy3",             provider: "supercode",  minTier: "spark", inputPrice: 0.15,  outputPrice: 0.60,  cachedPrice: 0 },
   { slug: "MiniMax-M3",                displayName: "MiniMax M3",               provider: "minimax",    minTier: "spark", inputPrice: 0.20,  outputPrice: 0.80,  cachedPrice: 0.04 },
+  // CLI cloud picker uses this slug; keep both so plan-gate matches either form
+  { slug: "minimax-m3",                displayName: "MiniMax M3 (cloud)",       provider: "supercode",  minTier: "spark", inputPrice: 0.20,  outputPrice: 0.80,  cachedPrice: 0.04 },
   { slug: "mimo-v2.5",                displayName: "MiMo v2.5",                provider: "orcarouter", minTier: "spark", inputPrice: 0.15,  outputPrice: 0.60,  cachedPrice: 0 },
   { slug: "kimi-k2-6",                 displayName: "Kimi K2.6",               provider: "openrouter", minTier: "spark", inputPrice: 0.15,  outputPrice: 0.60,  cachedPrice: 0 },
   { slug: "kimi-k2-7-code",           displayName: "Kimi K2.7 Code",           provider: "openrouter", minTier: "spark", inputPrice: 0.25,  outputPrice: 1.00,  cachedPrice: 0 },

@@ -129,6 +129,26 @@ function isYashDewasthale(): boolean {
   )
 }
 
+// Get user's plan tier for display
+async function getUserPlanTier(): Promise<string> {
+  if (!currentUser) return ""
+  try {
+    const prisma = (await import("src/lib/prisma")).default
+    const subscription = await prisma.subscription.findFirst({
+      where: {
+        userId: currentUser.id,
+        status: { in: ["active", "trialing"] },
+      },
+      include: { plan: true },
+      orderBy: { createdAt: "desc" },
+    })
+    if (!subscription?.plan) return ""
+    return subscription.plan.tier
+  } catch {
+    return ""
+  }
+}
+
 export async function initConversation(userId: string, conversationId: string | null = null, mode = "chat") {
   const thinking = createThinking("loading conversation")
   const conversation = await getOrCreateConversation(conversationId, mode)
@@ -1956,6 +1976,9 @@ export async function chatLoop(
   footer.setModel(provider.modelName)
   footer.setContextWindow(contextWindow)
   footer.setTokens(0)
+  // Set plan tier in footer
+  const planTier = await getUserPlanTier()
+  if (planTier) footer.setPlan(planTier)
   footer.mount()
 
   // Re-mount on terminal resize so the status row tracks the new bottom row.

@@ -4,6 +4,9 @@ import chalk from "chalk"
 import { theme, heavyDivider, CARET } from "src/cli/utils/tui.ts"
 import { type ModelProvider, providerMeta } from "src/cli/ai/provider.ts"
 import { getCliConfig, saveCliConfig, saveProviderApiKey, getByokSessionKey } from "src/lib/cli-config.ts"
+import { getStoredToken } from "src/lib/token"
+import { getCurrentUser } from "src/lib/api-client"
+import prisma from "src/lib/prisma"
 
 interface ModelEntry {
   value: string
@@ -11,6 +14,33 @@ interface ModelEntry {
   provider: ModelProvider
   cost: string
   desc: string
+}
+
+// ── Tier detection ──────────────────────────────────────────────
+export type UserTier = "spark" | "spark-premium" | "pro" | "ultra" | "none"
+
+async function getUserTier(): Promise<UserTier> {
+  try {
+    const token = await getStoredToken()
+    if (!token?.access_token) return "none"
+
+    const result = await getCurrentUser()
+    if (!result.ok) return "none"
+
+    const subscription = await prisma.subscription.findFirst({
+      where: {
+        userId: result.user.id,
+        status: { in: ["active", "trialing"] },
+      },
+      include: { plan: true },
+      orderBy: { createdAt: "desc" },
+    })
+
+    if (!subscription?.plan) return "none"
+    return subscription.plan.tier as UserTier
+  } catch {
+    return "none"
+  }
 }
 
 const SECTION_CLOUD = "__section_cloud__"
@@ -22,7 +52,6 @@ const SECTION_MINIMAX = "__section_minimax__"
 const SECTION_NVIDIA = "__section_nvidia__"
 const SECTION_OPENROUTER = "__section_openrouter__"
 const SECTION_ORCAROUTER = "__section_orcarouter__"
-const SECTION_CLOUD_PREMIUM = "__section_cloud_premium__"
 
 export const ALL_SECTIONS = new Set([
   SECTION_CLOUD, SECTION_BYOK,
@@ -30,7 +59,6 @@ export const ALL_SECTIONS = new Set([
   SECTION_GOOGLE, SECTION_MINIMAX,
   SECTION_NVIDIA, SECTION_OPENROUTER,
   SECTION_ORCAROUTER,
-  SECTION_CLOUD_PREMIUM,
 ])
 
 const SECTION_LABELS: Record<string, string> = {
@@ -43,21 +71,24 @@ const SECTION_LABELS: Record<string, string> = {
   [SECTION_NVIDIA]: "NVIDIA NIM",
   [SECTION_OPENROUTER]: "OpenRouter",
   [SECTION_ORCAROUTER]: "OrcaRouter",
-  [SECTION_CLOUD_PREMIUM]: "Supercode Cloud Premium",
 }
 
-const isMainSection = (v: string) => v === SECTION_CLOUD || v === SECTION_BYOK || v === SECTION_CLOUD_PREMIUM
+const isMainSection = (v: string) => v === SECTION_CLOUD || v === SECTION_BYOK
 
 // Models available through the Supercode cloud proxy (no API key needed)
 export const CLOUD_MODELS: ModelEntry[] = [
-  { value: "deepseek-v4-flash", label: "DeepSeek V4 Flash", provider: "supercode", cost: "free", desc: "Fast & capable" },
-  // { value: "glm-5.2", label: "GLM 5.2", provider: "supercode", cost: "free", desc: "Latest GLM" },
-  // { value: "glm-5.1", label: "GLM 5.1", provider: "supercode", cost: "free", desc: "Stable & reliable" },
-  // { value: "kimi-k2-6", label: "Kimi K2.6", provider: "supercode", cost: "free", desc: "Long context" },
-  // { value: "minimax-m3", label: "MiniMax M3", provider: "supercode", cost: "free", desc: "Fast & smart" },
-  { value: "hy3", label: "Hunyuan Hy3", provider: "supercode", cost: "free", desc: "Tencent flagship" },
-  { value: "mimo-v2.5", label: "Mimo v2.5", provider: "supercode", cost: "free", desc: "Novita" },
-  // { value: "fireworks/nemotron-3-ultra-nvfp4", label: "Nemotron 3 Ultra NVFP4", provider: "supercode", cost: "free", desc: "Fireworks" },
+  { value: "deepseek-v4-flash", label: "DeepSeek V4 Flash", provider: "supercode", cost: "", desc: "Fast & capable" },
+  { value: "kimi-k2-6", label: "Kimi K2.6", provider: "supercode", cost: "", desc: "Long context" },
+  { value: "kimi-k2-7-code", label: "Kimi K2.7 Code", provider: "supercode", cost: "", desc: "Code specialist" },
+  { value: "kimi-k3", label: "Kimi K3", provider: "supercode", cost: "", desc: "Moonshot latest" },
+  { value: "minimax-m3", label: "MiniMax M3", provider: "supercode", cost: "", desc: "Fast & smart" },
+  { value: "glm-5.2", label: "GLM 5.2", provider: "supercode", cost: "", desc: "Latest GLM" },
+  { value: "glm-5.1", label: "GLM 5.1", provider: "supercode", cost: "", desc: "Stable & reliable" },
+  { value: "mimo-v2.5", label: "Mimo v2.5", provider: "supercode", cost: "", desc: "Novita" },
+  { value: "hy3", label: "Hunyuan Hy3", provider: "supercode", cost: "", desc: "Tencent flagship" },
+  { value: "gemini-2.5-flash", label: "Gemini 2.5 Flash", provider: "supercode", cost: "", desc: "Google smart & fast" },
+  { value: "meta/llama-3.3-70b-instruct", label: "Llama 3.3 70B", provider: "supercode", cost: "", desc: "Open weights" },
+  { value: "orcarouter/auto", label: "OrcaRouter Auto", provider: "supercode", cost: "", desc: "Auto-pick cheapest" },
 ]
 
 // Models available when you bring your own API key (BYOK)
@@ -154,7 +185,7 @@ export const BYOK_MODELS: ModelEntry[] = [
   { value: "openai/gpt-4.1-nano", label: "GPT-4.1 Nano", provider: "openrouter", cost: "0.3x", desc: "Tiny & fast" },
   { value: "openai/o3-mini", label: "o3-mini", provider: "openrouter", cost: "3x", desc: "Reasoning mini" },
   { value: "openai/o4-mini", label: "o4-mini", provider: "openrouter", cost: "3x", desc: "Reasoning v4 mini" },
-  { value: "openai/gpt-oss-120b:free", label: "GPT OSS 120B", provider: "openrouter", cost: "free", desc: "Open-weight free" },
+  { value: "openai/gpt-oss-120b:free", label: "GPT OSS 120B", provider: "openrouter", cost: "", desc: "Open-weight" },
   { value: "x-ai/grok-3", label: "Grok 3", provider: "openrouter", cost: "10x", desc: "xAI flagship" },
   { value: "x-ai/grok-3-mini", label: "Grok 3 Mini", provider: "openrouter", cost: "5x", desc: "Compact Grok" },
   { value: "x-ai/grok-3-mini-fast", label: "Grok 3 Mini Fast", provider: "openrouter", cost: "5x", desc: "Fast Grok" },
@@ -201,28 +232,56 @@ export const BYOK_MODELS: ModelEntry[] = [
   { value: "kimi/kimi-k3", label: "Kimi K3", provider: "orcarouter", cost: "", desc: "Moonshot latest" },
   { value: "kimi/kimi-k2.6", label: "Kimi K2.6", provider: "orcarouter", cost: "", desc: "Long context" },
   { value: "minimax/minimax-m3", label: "MiniMax M3", provider: "orcarouter", cost: "", desc: "Fast & smart" },
-  { value: "orcarouter/auto", label: "OrcaRouter Auto", provider: "orcarouter", cost: "0x", desc: "Auto-pick cheapest" },
+  { value: "orcarouter/auto", label: "OrcaRouter Auto", provider: "orcarouter", cost: "", desc: "Auto-pick cheapest" },
 ]
 
-// Set of premium cloud models that require Supercode Cloud Premium
+// Set of premium cloud models that require Pro or higher tier (frontier models)
 export const PREMIUM_CLOUD_MODELS = new Set([
-  "glm-5.2",
-  "kimi-k2-7-code",
-  "kimi-k3",
-  "minimax-m3",
+  "anthropic/claude-sonnet-4.6",
+  "anthropic/claude-opus-4.7",
+  "anthropic/claude-opus-4-8",
+  "openai/gpt-5.5",
+  "grok/grok-4-fast-reasoning",
+  "gemini-2.5-pro",
+  "deepseek/deepseek-reasoner",
 ])
 
-export const MODELS: ModelEntry[] = [
-  { value: SECTION_CLOUD, label: "Supercode Cloud", provider: "supercode", cost: "", desc: "" },
-  ...CLOUD_MODELS,
-  { value: SECTION_CLOUD_PREMIUM, label: "Supercode Cloud Premium", provider: "supercode", cost: "", desc: "" },
-  { value: "glm-5.2", label: "GLM 5.2", provider: "supercode", cost: "", desc: "Latest GLM" },
-  { value: "kimi-k2-7-code", label: "Kimi K2.7 Code", provider: "supercode", cost: "", desc: "Code specialist" },
-  { value: "kimi-k3", label: "Kimi K3", provider: "supercode", cost: "", desc: "Moonshot latest" },
-  { value: "minimax-m3", label: "MiniMax M3", provider: "supercode", cost: "", desc: "Fast & smart" },
-  { value: SECTION_BYOK, label: "Bring Your Own Key", provider: "supercode", cost: "", desc: "" },
-  ...BYOK_MODELS,
-]
+// Tier-organized model lists
+export const TIER_MODELS: Record<UserTier, ModelEntry[]> = {
+  "spark": [
+    { value: SECTION_CLOUD, label: "Supercode Cloud", provider: "supercode", cost: "", desc: "" },
+    ...CLOUD_MODELS,
+    { value: SECTION_BYOK, label: "Bring Your Own Key", provider: "supercode", cost: "", desc: "" },
+    ...BYOK_MODELS,
+  ],
+  "spark-premium": [
+    { value: SECTION_CLOUD, label: "Supercode Cloud", provider: "supercode", cost: "", desc: "" },
+    ...CLOUD_MODELS,
+    { value: SECTION_BYOK, label: "Bring Your Own Key", provider: "supercode", cost: "", desc: "" },
+    ...BYOK_MODELS,
+  ],
+  "pro": [
+    { value: SECTION_CLOUD, label: "Supercode Cloud", provider: "supercode", cost: "", desc: "" },
+    ...CLOUD_MODELS,
+    { value: SECTION_BYOK, label: "Bring Your Own Key", provider: "supercode", cost: "", desc: "" },
+    ...BYOK_MODELS,
+  ],
+  "ultra": [
+    { value: SECTION_CLOUD, label: "Supercode Cloud", provider: "supercode", cost: "", desc: "" },
+    ...CLOUD_MODELS,
+    { value: SECTION_BYOK, label: "Bring Your Own Key", provider: "supercode", cost: "", desc: "" },
+    ...BYOK_MODELS,
+  ],
+  "none": [
+    { value: SECTION_CLOUD, label: "Supercode Cloud", provider: "supercode", cost: "", desc: "" },
+    ...CLOUD_MODELS,
+    { value: SECTION_BYOK, label: "Bring Your Own Key", provider: "supercode", cost: "", desc: "" },
+    ...BYOK_MODELS,
+  ],
+}
+
+// Default model list (fallback)
+export const MODELS: ModelEntry[] = TIER_MODELS["none"]
 
 export class ModelPicker {
   items: ModelEntry[] = MODELS
@@ -377,28 +436,13 @@ export class ModelPicker {
       const name = chalk.hex(
         isCurrent ? theme.green : theme.greenGlow,
       )(m.label.padEnd(22))
-      const cost = chalk.hex(
-        m.cost === "free" ? theme.greenGlow : theme.muted,
-      )(m.cost.padEnd(6))
+      const cost = chalk.hex(theme.muted)(m.cost.padEnd(6))
       const desc = chalk.hex(theme.muted)(m.desc.padEnd(20))
       const marker = isCurrent
         ? ` ${chalk.bgHex(theme.amber).hex(theme.black).bold(" current ")}`
         : ""
-      const isPremium = PREMIUM_CLOUD_MODELS.has(m.value)
-      const cloudTag =
-        m.provider === "supercode" && !isCurrent && !isPremium
-          ? ` ${chalk.bgHex(theme.green).hex(theme.black).bold(" CLOUD ")}`
-          : ""
-      const premiumTag =
-        isPremium && !isCurrent
-          ? ` ${chalk.bgHex(theme.amber).hex(theme.black).bold(" PREMIUM ")}`
-          : ""
-      const freeTag =
-        !isCurrent && m.cost === "free" && m.provider !== "supercode"
-          ? ` ${chalk.bgHex(theme.green).hex(theme.black).bold(" FREE ")}`
-          : ""
 
-      const label = `${prefix} ${name} ${cost}${desc}${marker}${cloudTag}${premiumTag}${freeTag}`
+      const label = `${prefix} ${name} ${cost}${desc}${marker}`
 
       if (isSelected) {
         const bg = chalk.bgHex(theme.greenDeep)
@@ -507,9 +551,12 @@ export async function pickModel(
   const currentProvider = stored?.provider || "supercode"
   const currentModel = stored?.model || "deepseek-v4-flash"
 
+  // Get user tier for model filtering
+  const userTier = await getUserTier()
+
   const picker = new ModelPicker()
   if (providerFilter) {
-    picker.items = MODELS.filter((m) => m.provider === providerFilter)
+    picker.items = TIER_MODELS[userTier].filter((m) => m.provider === providerFilter)
     if (opts?.allowCustom) {
       picker.items.push({
         value: "__custom__",
@@ -520,6 +567,8 @@ export async function pickModel(
       })
     }
     picker.setFilter("")
+  } else {
+    picker.items = TIER_MODELS[userTier]
   }
   const cols = process.stdout.columns ?? 80
 
@@ -608,15 +657,23 @@ export async function pickModel(
     return { provider: selected.provider, model: trimmed }
   }
 
-  // Premium cloud models require Supercode Cloud Premium
-  if (PREMIUM_CLOUD_MODELS.has(selected.value)) {
+  // Premium cloud models (frontier) require Pro or higher tier
+  const frontierModels = new Set([
+    "anthropic/claude-sonnet-4.6",
+    "anthropic/claude-opus-4.7",
+    "anthropic/claude-opus-4-8",
+    "openai/gpt-5.5",
+    "grok/grok-4-fast-reasoning",
+    "gemini-2.5-pro",
+    "deepseek/deepseek-reasoner",
+  ])
+  if (frontierModels.has(selected.value) && userTier !== "pro" && userTier !== "ultra") {
     process.stdout.write("\n")
     process.stdout.write(
-      ` ${chalk.hex(theme.amber)("◆")}  ${chalk.hex(theme.green).bold("Supercode Cloud Premium")}
+      ` ${chalk.hex(theme.amber)("◆")}  ${chalk.hex(theme.green).bold("Pro Plan Required")}
 
-   ${chalk.hex(theme.muted)("This model is available on Supercode Cloud Premium.")}
-   ${chalk.hex(theme.muted)("Upgrade your plan to access premium models.")}
-   ${chalk.hex(theme.muted)("→ https://supercode.ai/pricing")}
+   ${chalk.hex(theme.muted)("This model requires a Pro or Ultra subscription.")}
+   ${chalk.hex(theme.muted)("Run /upgrade to subscribe.")}
 
 `
     )

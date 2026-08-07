@@ -785,6 +785,7 @@ export class PersistentStatusBar {
   private state = {
     mode: "chat",
     model: "",
+    plan: "",
     connectionType: "",
     cumulativeTokens: 0,
     contextWindow: 0,
@@ -889,6 +890,10 @@ export class PersistentStatusBar {
     this.update({ model })
   }
 
+  setPlan(plan: string) {
+    this.update({ plan })
+  }
+
   setConnectionType(type: string) {
     this.update({ connectionType: type })
   }
@@ -982,7 +987,7 @@ export class PersistentStatusBar {
     parts.push(
       this.state.isStreaming
         ? ansiColor(theme.greenDim, "esc interrupt")
-        : ansiColor(theme.greenDim, "tab mode"),
+        : ansiColor(theme.greenDim, this.state.plan || "tab mode"),
     )
 
     const inner = parts.join(sep)
