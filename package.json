@@ -44,7 +44,10 @@
     "dev:video": "bun run --cwd apps/video dev",
     "build:video": "bun run --cwd apps/video build",
     "build:video:square": "bun run --cwd apps/video build:square",
-    "build:video:vertical": "bun run --cwd apps/video build:vertical"
+    "build:video:vertical": "bun run --cwd apps/video build:vertical",
+    "dev:jarvis": "bun run --cwd apps/jarvis dev",
+    "build:jarvis": "bun run --cwd apps/jarvis build",
+    "tauri:jarvis": "bun run --cwd apps/jarvis tauri"
   },
   "devDependencies": {
     "turbo": "^2.5.8",
