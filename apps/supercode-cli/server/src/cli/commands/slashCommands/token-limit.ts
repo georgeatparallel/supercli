@@ -7,7 +7,7 @@ import {
   formatTokenCount,
   progressBar,
 } from "src/cli/utils/tui.ts"
-import { getDailyOpusCount, OPUS_DAILY_LIMIT } from "src/lib/token-budget"
+import { getDailyOpusCount, OPUS_DAILY_LIMIT, DAILY_BUDGET_TOKENS } from "src/lib/token-budget"
 import { computeCost, getProviderDisplayNameFromRaw, getProviderColor } from "src/lib/pricing"
 
 function todayStart(): Date {
@@ -143,11 +143,15 @@ export async function tokenLimitCommand(): Promise<void> {
   console.log()
 
   const avgCostPerQuery = grandTotalQueries > 0 ? grandTotalCost / grandTotalQueries : 0
-  const budgetPct = Math.min(100, Math.round((grandTotalTokens / 128_000) * 100))
+  const budgetPct = Math.min(100, Math.round((grandTotalTokens / DAILY_BUDGET_TOKENS) * 100))
+  const budgetLabel =
+    DAILY_BUDGET_TOKENS >= 1_000_000
+      ? `${Math.round(DAILY_BUDGET_TOKENS / 1_000_000)}M budget`
+      : `${Math.round(DAILY_BUDGET_TOKENS / 1_000)}K budget`
 
   line(chalk.hex(theme.green)("Today's Summary"))
   line()
-  line(`  ${chalk.hex(theme.greenGlow)("Total tokens")}  ${formatTokenCount(grandTotalTokens).padStart(8)}  ${progressBar(grandTotalTokens, 128_000, 16)}  ${dim("of 128K budget")}`)
+  line(`  ${chalk.hex(theme.greenGlow)("Total tokens")}  ${formatTokenCount(grandTotalTokens).padStart(8)}  ${progressBar(grandTotalTokens, DAILY_BUDGET_TOKENS, 16)}  ${dim(`of ${budgetLabel}`)}`)
   line(`  ${chalk.hex(theme.greenGlow)("Total queries")} ${String(grandTotalQueries).padStart(8)}  ${progressBar(grandTotalQueries, 50, 16)}  ${dim("of 50 queries")}`)
   line(`  ${chalk.hex(theme.greenGlow)("Total cost")}   ${`$${grandTotalCost.toFixed(2)}`.padStart(8)}  ${dim(`avg $${avgCostPerQuery.toFixed(3)}/query`)}`)
   line()

@@ -94,95 +94,131 @@ export class ServerProxyService {
       throw new Error("Not authenticated. Please login first.")
     }
 
-    const res = await fetch(`${BASE_URL}/api/ai/chat`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token.access_token}`,
-      },
-      body: JSON.stringify({
-        messages,
-        provider: this.providerName,
-        model: this.modelName,
-        tools,
-        ...(this.apiKey && this.providerName === "concentrateai" ? { concentrateAiKey: this.apiKey } : {}),
-      }),
-      signal,
-    })
+    // Safety timeout: even though the server now bounds the upstream work,
+    // don't let a stalled server hang the turn forever on the client side.
+    const controller = new AbortController()
+    const timeoutMs = Number(process.env.SUPERCODE_REQUEST_TIMEOUT_MS) || 120_000
+    const timeoutId = setTimeout(() => {
+      if (!signal?.aborted) controller.abort(new Error("Request timed out"))
+    }, timeoutMs)
+    const onAbort = () => controller.abort()
+    if (signal) {
+      if (signal.aborted) controller.abort()
+      else signal.addEventListener("abort", onAbort, { once: true })
+    }
+    const cleanup = () => {
+      clearTimeout(timeoutId)
+      if (signal) signal.removeEventListener("abort", onAbort)
+    }
 
-    if (!res.ok) {
-      const text = await res.text()
-      if (text.includes("Insufficient Funds") || text.includes("Credit usage at configured limit")) {
-        return {
-          content: "You've used your limits. Resets in 24hrs.",
-          finishReason: "stop" as FinishReason,
-          usage: {
-            inputTokens: 0,
-            inputTokenDetails: { noCacheTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 },
-            outputTokens: 0,
-            outputTokenDetails: { textTokens: 0, reasoningTokens: 0 },
-            totalTokens: 0,
-          },
-          toolCalls: [],
+    try {
+      const res = await fetch(`${BASE_URL}/api/ai/chat`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token.access_token}`,
+        },
+        body: JSON.stringify({
+          messages,
+          provider: this.providerName,
+          model: this.modelName,
+          tools,
+          ...(this.apiKey && this.providerName === "concentrateai" ? { concentrateAiKey: this.apiKey } : {}),
+        }),
+        signal: controller.signal,
+      })
+
+      if (!res.ok) {
+        const text = await res.text()
+        if (text.includes("Insufficient Funds") || text.includes("Credit usage at configured limit")) {
+          cleanup()
+          return {
+            content: "You've used your limits. Resets in 24hrs.",
+            finishReason: "stop" as FinishReason,
+            usage: {
+              inputTokens: 0,
+              inputTokenDetails: { noCacheTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 },
+              outputTokens: 0,
+              outputTokenDetails: { textTokens: 0, reasoningTokens: 0 },
+              totalTokens: 0,
+            },
+            toolCalls: [],
+          }
+        }
+        cleanup()
+        throw new Error(text || "AI proxy request failed")
+      }
+
+      const reader = res.body?.getReader()
+      if (!reader) {
+        cleanup()
+        throw new Error("No response body")
+      }
+
+      const decoder = new TextDecoder()
+      let buffer = ""
+      let fullResponse = ""
+      let finishReason: FinishReason = "stop"
+      let serverError: string | null = null
+      let usage: LanguageModelUsage = {
+        inputTokens: 0,
+        inputTokenDetails: { noCacheTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 },
+        outputTokens: 0,
+        outputTokenDetails: { textTokens: 0, reasoningTokens: 0 },
+        totalTokens: 0,
+      }
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split("\n")
+        buffer = lines.pop() || ""
+
+        for (const line of lines) {
+          const trimmed = line.trim()
+          if (!trimmed) continue
+          try {
+            const event = JSON.parse(trimmed)
+            switch (event.type) {
+              case "text":
+                fullResponse += event.content
+                onChunk?.(event.content)
+                break
+              case "reasoning":
+                onReasoning?.(event.content)
+                break
+              case "tool-call":
+                toolCalls.push({
+                  toolName: event.toolName,
+                  args: event.args,
+                  toolCallId: event.toolCallId || `call_${Date.now()}_${toolCalls.length}`,
+                })
+                onToolCall?.({ toolName: event.toolName, args: event.args })
+                break
+              case "error":
+                // The server surfaces explicit upstream/empty-result failures
+                // as an error event. Throw so the caller's error handling runs
+                // instead of silently reporting an empty turn.
+                serverError = event.message || "AI proxy error"
+                break
+              case "finish":
+                finishReason = event.reason || "stop"
+                if (event.usage) usage = event.usage
+                break
+            }
+          } catch { /* skip malformed */ }
         }
       }
-      throw new Error(text || "AI proxy request failed")
+
+      cleanup()
+      if (serverError) throw new Error(serverError)
+      return { content: fullResponse, finishReason, usage, toolCalls }
+    } catch (err) {
+      cleanup()
+      throw err
     }
-
-    const reader = res.body?.getReader()
-    if (!reader) throw new Error("No response body")
-
-    const decoder = new TextDecoder()
-    let buffer = ""
-    let fullResponse = ""
-    let finishReason: FinishReason = "stop"
-    let usage: LanguageModelUsage = {
-      inputTokens: 0,
-      inputTokenDetails: { noCacheTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 },
-      outputTokens: 0,
-      outputTokenDetails: { textTokens: 0, reasoningTokens: 0 },
-      totalTokens: 0,
-    }
-
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-
-      buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split("\n")
-      buffer = lines.pop() || ""
-
-      for (const line of lines) {
-        const trimmed = line.trim()
-        if (!trimmed) continue
-        try {
-          const event = JSON.parse(trimmed)
-          switch (event.type) {
-            case "text":
-              fullResponse += event.content
-              onChunk?.(event.content)
-              break
-            case "reasoning":
-              onReasoning?.(event.content)
-              break
-            case "tool-call":
-              toolCalls.push({
-                toolName: event.toolName,
-                args: event.args,
-                toolCallId: event.toolCallId || `call_${Date.now()}_${toolCalls.length}`,
-              })
-              onToolCall?.({ toolName: event.toolName, args: event.args })
-              break
-            case "finish":
-              finishReason = event.reason || "stop"
-              if (event.usage) usage = event.usage
-              break
-          }
-        } catch { /* skip malformed */ }
-      }
-    }
-
-    return { content: fullResponse, finishReason, usage, toolCalls }
   }
 
   async sendMessage(

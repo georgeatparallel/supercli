@@ -1,0 +1,140 @@
+import { test, expect } from "bun:test"
+import { parseStreamedContent } from "../embedded-tool-calls"
+
+function drain(parser: any, chunks: string[]) {
+  const text: string[] = []
+  const calls: any[] = []
+  for (const chunk of chunks) {
+    const out = parser.push(chunk)
+    if (out.text) text.push(out.text)
+    calls.push(...out.calls)
+  }
+  const flushed = parser.flush()
+  if (flushed.text) text.push(flushed.text)
+  calls.push(...flushed.calls)
+  return { text: text.join(""), calls }
+}
+
+test("square bracket single tool call, one chunk", () => {
+  const parser = parseStreamedContent()
+  const out = drain(parser, [
+    'I\'ll check right away.[TOOL_CALL]\nrun_command --command="git diff --staged"\n[/TOOL_CALL]',
+  ])
+  expect(out.text).toBe("I'll check right away.")
+  expect(out.calls).toEqual([
+    { name: "run_command", args: { command: "git diff --staged" }, id: "" },
+  ])
+})
+
+test("square bracket split across two chunks", () => {
+  const out = drain(
+    parseStreamedContent(),
+    ["I'll check.", "[TOOL_CALL]\nrun_command --command=\"git diff --staged\"\n[/", "TOOL_CALL]"],
+  )
+  expect(out.text).toBe("I'll check.")
+  expect(out.calls).toEqual([
+    { name: "run_command", args: { command: "git diff --staged" }, id: "" },
+  ])
+})
+
+test("xml invoke block", () => {
+  const out = drain(
+    parseStreamedContent(),
+    ["Sure.<tool_call><invoke name=run_command><parameter name=command>", "git diff", "</parameter></invoke></tool_call>"],
+  )
+  expect(out.text).toBe("Sure.")
+  expect(out.calls.length).toBe(1)
+  expect(out.calls[0].name).toBe("run_command")
+  expect(out.calls[0].args.command).toBe("git diff")
+})
+
+test("xml invoke with explicit quoted name + multiple params", () => {
+  const out = drain(
+    parseStreamedContent(),
+    ['<tool_call><invoke name="edit_file"><parameter name="path">/a/b.ts</parameter><parameter name="old_string">foo</parameter><parameter name="new_string">bar</parameter></invoke></tool_call>after'],
+  )
+  expect(out.calls.length).toBe(1)
+  const c = out.calls[0]
+  expect(c.name).toBe("edit_file")
+  expect(c.args).toEqual({ path: "/a/b.ts", old_string: "foo", new_string: "bar" })
+  expect(out.text).toBe("after")
+})
+
+test("trailing prose after a block is emitted", () => {
+  const out = drain(
+    parseStreamedContent(),
+    ["Done.[TOOL_CALL]\nread_file --path=\"/x\"\n[/TOOL_CALL] All set!"],
+  )
+  expect(out.text).toBe("Done. All set!")
+  expect(out.calls.length).toBe(1)
+})
+
+test("no marker - all prose is emitted immediately", () => {
+  const out = drain(parseStreamedContent(), ["hello world", " more"])
+  expect(out.text).toBe("hello world more")
+  expect(out.calls.length).toBe(0)
+})
+
+test("truncated/unclosed marker is dropped on flush, not leaked", () => {
+  const out = drain(parseStreamedContent(), ["help", "[TOOL_CALL]\nrun_command --command="])
+  expect(out.text).toBe("help")
+  expect(out.calls.length).toBe(0)
+})
+
+test("bare json descriptor single chunk", () => {
+  const out = drain(
+    parseStreamedContent(),
+    ['{"name":"run_command","parameters":{"command":"git status"}}'],
+  )
+  expect(out.text).toBe("")
+  expect(out.calls).toEqual([
+    { name: "run_command", args: { command: "git status" }, id: "" },
+  ])
+})
+
+test("bare json descriptor with surrounding prose", () => {
+  const out = drain(
+    parseStreamedContent(),
+    ["Let me check.", '{"name":"read_file","parameters":{"path":"/x.ts"}}', " Now done."],
+  )
+  expect(out.text).toBe("Let me check. Now done.")
+  expect(out.calls.length).toBe(1)
+  expect(out.calls[0].name).toBe("read_file")
+  expect(out.calls[0].args).toEqual({ path: "/x.ts" })
+})
+
+test("bare json descriptor split across chunks", () => {
+  const out = drain(
+    parseStreamedContent(),
+    ['{"name":"run_command","param', 'eters":{"command":"git diff --staged"}}'],
+  )
+  expect(out.calls.length).toBe(1)
+  const c = out.calls[0]
+  expect(c.name).toBe("run_command")
+  expect(c.args.command).toBe("git diff --staged")
+})
+
+test("bare json descriptor accepts arguments and args keys", () => {
+  const a = drain(parseStreamedContent(), ['{"name":"edit_file","arguments":{"path":"/a"}}'])
+  expect(a.calls[0].args).toEqual({ path: "/a" })
+  const b = drain(parseStreamedContent(), ['{"name":"web_search","args":{"query":"x"}}'])
+  expect(b.calls[0].args).toEqual({ query: "x" })
+})
+
+test("bare json with unknown tool name is left as prose", () => {
+  const out = drain(
+    parseStreamedContent(),
+    ['here is some { "name": "not_a_tool", "parameters": {"q":1} } prose'],
+  )
+  expect(out.text).toContain("prose")
+  expect(out.calls.length).toBe(0)
+})
+
+test("json descriptor with nested braces in a string arg", () => {
+  const out = drain(
+    parseStreamedContent(),
+    ['{"name":"edit_file","parameters":{"path":"/a","old_string":"{foo}"}}'],
+  )
+  expect(out.calls.length).toBe(1)
+  expect(out.calls[0].args.old_string).toBe("{foo}")
+})

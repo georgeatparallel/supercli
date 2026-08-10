@@ -3,9 +3,15 @@ import { join } from "node:path"
 import os from "node:os"
 import { randomUUID } from "node:crypto"
 import prisma from "./prisma"
-export const DAILY_BUDGET_TOKENS = 128_000
+export const DAILY_BUDGET_TOKENS = Number(process.env.SUPERCODE_DAILY_TOKEN_BUDGET) || 1_000_000
 export const DAILY_QUERY_LIMIT = 20
 export const OPUS_DAILY_LIMIT = 20
+
+function formatTokens(n: number): string {
+  if (n >= 1_000_000) return `${Math.round(n / 1_000_000)}M`
+  if (n >= 1_000) return `${Math.round(n / 1_000)}K`
+  return String(n)
+}
 
 const DEVICE_ID_PATH = join(os.homedir(), ".config", "supercode", "device-id")
 const OPUS_USAGE_PATH = join(os.homedir(), ".config", "supercode", "opus-usage.json")
@@ -64,7 +70,7 @@ export async function checkDailyTokenBudget(userId?: string): Promise<void> {
   const used = await getDailyTokenUsage(userId)
   if (used >= DAILY_BUDGET_TOKENS) {
     throw new Error(
-      "You've hit your daily limit of 128K tokens. Wait 24hrs for it to reset."
+      `You've hit your daily limit of ${formatTokens(DAILY_BUDGET_TOKENS)} tokens. Wait 24hrs for it to reset.`
     )
   }
 }

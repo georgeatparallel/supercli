@@ -92,3 +92,10 @@ apps/web/scripts/
 .claude/skills/brag
 .factory/skills/brag
 /brag-output
+
+# tauri app (apps/jarvis)
+apps/jarvis/src-tauri/target/
+apps/jarvis/src-tauri/gen/
+apps/jarvis/img/
+apps/jarvis/.gitignore
+apps/jarvis/.gitignore
