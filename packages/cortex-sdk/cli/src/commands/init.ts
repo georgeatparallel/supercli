@@ -34,11 +34,11 @@ export async function runInit(tui: TuiContext): Promise<number> {
   console.log("")
   console.log("Next: import the config in your app and pass each export to the matching SDK factory:")
   for (const entry of entries) {
-    if (entry.name === "gateway") console.log(`  import { createGateway } from "cortex-sdk/gateway"`)
-    if (entry.name === "web-search") console.log(`  import { createWebSearch } from "cortex-sdk/web-search"`)
-    if (entry.name === "voice") console.log(`  import { createVoice } from "cortex-sdk/voice"`)
-    if (entry.name === "composio") console.log(`  import { createComposio } from "cortex-sdk/composio"`)
-    if (entry.name === "agent-handler") console.log(`  import { createAgentHandler } from "cortex-sdk/agent-handler"`)
+    if (entry.name === "gateway") console.log(`  import { createGateway } from "supercode-cortex/gateway"`)
+    if (entry.name === "web-search") console.log(`  import { createWebSearch } from "supercode-cortex/web-search"`)
+    if (entry.name === "voice") console.log(`  import { createVoice } from "supercode-cortex/voice"`)
+    if (entry.name === "composio") console.log(`  import { createComposio } from "supercode-cortex/composio"`)
+    if (entry.name === "agent-handler") console.log(`  import { createAgentHandler } from "supercode-cortex/agent-handler"`)
   }
   return 0
 }

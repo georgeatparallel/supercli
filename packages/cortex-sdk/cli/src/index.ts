@@ -8,17 +8,17 @@ import { runUpdate } from "./commands/update"
 
 const VERSION = "0.1.0"
 
-const HELP = `cortex-sdk — install and configure the cortex SDK
+const HELP = `supercode-cortex — install and configure the cortex SDK
 
 Usage:
-  cortex-sdk init              Interactive setup: pick modules and providers
-  cortex-sdk find              Browse providers and install them
-  cortex-sdk list              Show installed modules and available units
-  cortex-sdk add <unit>        Add a unit (e.g. gateway.openrouter)
-  cortex-sdk remove <unit>     Remove an installed unit
-  cortex-sdk update <unit>     Reconfigure an installed unit
-  cortex-sdk --help            Show this help
-  cortex-sdk --version         Show version
+  supercode-cortex init              Interactive setup: pick modules and providers
+  supercode-cortex find              Browse providers and install them
+  supercode-cortex list              Show installed modules and available units
+  supercode-cortex add <unit>        Add a unit (e.g. gateway.openrouter)
+  supercode-cortex remove <unit>     Remove an installed unit
+  supercode-cortex update <unit>     Reconfigure an installed unit
+  supercode-cortex --help            Show this help
+  supercode-cortex --version         Show version
 
 Units are named <module>.<provider>, e.g.:
   gateway.openrouter, gateway.mergedev, web-search.exa, voice.smallest
@@ -50,8 +50,8 @@ async function main(): Promise<void> {
       return
     case "add":
       if (!term) {
-        console.log("Usage: cortex-sdk add <unit>")
-        console.log("Run `cortex-sdk list` to see available units.")
+        console.log("Usage: supercode-cortex add <unit>")
+        console.log("Run `supercode-cortex list` to see available units.")
         process.exitCode = 1
         return
       }
@@ -59,7 +59,7 @@ async function main(): Promise<void> {
       return
     case "remove":
       if (!term) {
-        console.log("Usage: cortex-sdk remove <unit>")
+        console.log("Usage: supercode-cortex remove <unit>")
         process.exitCode = 1
         return
       }
@@ -67,7 +67,7 @@ async function main(): Promise<void> {
       return
     case "update":
       if (!term) {
-        console.log("Usage: cortex-sdk update <unit>")
+        console.log("Usage: supercode-cortex update <unit>")
         process.exitCode = 1
         return
       }
@@ -75,7 +75,7 @@ async function main(): Promise<void> {
       return
     default:
       console.log(`Unknown command: ${command}`)
-      console.log("Run `cortex-sdk --help` for usage.")
+      console.log("Run `supercode-cortex --help` for usage.")
       process.exitCode = 1
   }
 }
