@@ -1,12 +1,40 @@
 {
-  "name": "cortex-sdk",
+  "name": "supercode-cortex",
   "version": "0.1.0",
   "description": "Unified SDK for building AI agents with 8 gateway providers, 3 web search providers, 6 MCP platforms, and 3 voice providers",
+  "license": "MIT",
+  "author": "Yash Dewasthale",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yashdev9274/supercli.git",
+    "directory": "packages/cortex-sdk"
+  },
+  "bugs": {
+    "url": "https://github.com/yashdev9274/supercli/issues"
+  },
+  "keywords": [
+    "ai",
+    "agents",
+    "llm",
+    "gateway",
+    "mcp",
+    "web-search",
+    "voice",
+    "stt",
+    "tts",
+    "cli"
+  ],
+  "engines": {
+    "bun": ">=1.2.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "bin": {
-    "cortex-sdk": "./dist/cli/index.js"
+    "supercode-cortex": "./dist/cli/index.js"
   },
   "exports": {
     ".": {
@@ -47,6 +75,7 @@
   "scripts": {
     "build": "tsup",
     "build:cli": "tsup --config tsup.cli.config.ts",
+    "prepublishOnly": "bun run build && bun run build:cli",
     "lint": "echo 'cortex-sdk lint pending'",
     "typecheck": "tsc --noEmit",
     "test": "bun test"
