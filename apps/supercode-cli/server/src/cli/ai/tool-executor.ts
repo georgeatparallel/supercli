@@ -1,6 +1,7 @@
 import { streamText, type ModelMessage, type ToolSet } from "ai"
 import { z } from "zod"
 import { isEmptyToolResult, isDeniedToolResult, summarizeToolResult } from "./tool-result"
+import { parseStreamedContent, KNOWN_TOOL_NAMES } from "src/lib/embedded-tool-calls"
 
 export interface ToolExecutorCallbacks {
   onChunk?: (chunk: string) => void
@@ -94,35 +95,68 @@ export async function executeToolLoop(
       }
     }
 
+    // Recover MiniMax/Kimi-style inline tool descriptors that leak into
+    // textStream instead of structured tool_calls. Applies to every BYOK
+    // provider that routes through executeToolLoop.
+    const known = new Set(KNOWN_TOOL_NAMES)
+    if (functions) {
+      for (const name of Object.keys(functions)) known.add(name)
+    }
+    const embedded = parseStreamedContent({ knownTools: known })
+    const embeddedCalls: Array<{ name: string; args: Record<string, unknown>; id: string }> = []
     const processText = async () => {
       for await (const chunk of result.textStream) {
-        accumulatedContent += chunk
-        callbacks.onChunk?.(chunk)
+        const blk = embedded.push(String(chunk))
+        if (blk.text) {
+          accumulatedContent += blk.text
+          callbacks.onChunk?.(blk.text)
+        }
+        if (blk.calls.length) embeddedCalls.push(...blk.calls)
       }
     }
 
     await Promise.all([processReasoning(), processText()])
 
+    const flushed = embedded.flush()
+    if (flushed.text) {
+      accumulatedContent += flushed.text
+      callbacks.onChunk?.(flushed.text)
+    }
+    if (flushed.calls.length) embeddedCalls.push(...flushed.calls)
+
     const fullResult = result as any
     let toolCalls: Array<{ toolCallId: string; toolName: string; args: Record<string, unknown> }> = []
     let toolResults: Array<{ toolCallId: string; toolName: string; args: any; result: any }> = []
+    const seenToolKeys = new Set<string>()
+
+    const pushToolCall = (toolName: string, args: Record<string, unknown>, toolCallId?: string) => {
+      const key = `${toolName}:${JSON.stringify(args)}`
+      if (seenToolKeys.has(key)) return
+      seenToolKeys.add(key)
+      toolCalls.push({
+        toolCallId: toolCallId || `call_embedded_${Date.now()}_${toolCalls.length}`,
+        toolName,
+        args,
+      })
+    }
 
     if (fullResult.steps && Array.isArray(fullResult.steps)) {
       for (const step of fullResult.steps) {
         if (step.toolCalls && step.toolCalls.length > 0) {
           for (const tc of step.toolCalls) {
             const args = tc.args || (tc as any).input || {}
-            toolCalls.push({
-              toolCallId: tc.toolCallId,
-              toolName: tc.toolName,
-              args: args as Record<string, unknown>,
-            })
+            pushToolCall(tc.toolName, args as Record<string, unknown>, tc.toolCallId)
           }
         }
         if (step.toolResults && step.toolResults.length > 0) {
           toolResults.push(...step.toolResults)
         }
       }
+    }
+
+    // Promote any embedded tool descriptors recovered from text.
+    for (const call of embeddedCalls) {
+      pushToolCall(call.name, call.args, call.id || undefined)
     }
 
     if (toolCalls.length === 0) {

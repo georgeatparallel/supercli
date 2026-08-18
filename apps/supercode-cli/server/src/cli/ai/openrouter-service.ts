@@ -4,6 +4,7 @@ import type { FinishReason, LanguageModelUsage } from "ai"
 import { recordUsage } from "../../lib/track-usage"
 import { computeCost } from "../../lib/pricing"
 import { isEmptyToolResult, isDeniedToolResult, summarizeToolResult } from "./tool-result"
+import { parseStreamedContent, KNOWN_TOOL_NAMES } from "src/lib/embedded-tool-calls"
 
 const MODEL_MAX_TOKENS: Record<string, number> = {
   "moonshotai/kimi-k2.6": 256,
@@ -124,6 +125,21 @@ export class OpenRouterService {
     const toolCalls: Array<{ toolName: string; args: Record<string, unknown>; toolCallId: string }> = []
     const pendingToolCalls: Record<number, { id: string; name: string; args: string }> = {}
 
+    // Recover MiniMax-style inline tool descriptors that leak into content
+    // instead of structured tool_calls, and strip control-token junk so the
+    // TUI never shows raw markup.
+    const known = new Set(KNOWN_TOOL_NAMES)
+    if (tools && typeof tools === "object") {
+      for (const name of Object.keys(tools)) known.add(name)
+    }
+    const embedded = parseStreamedContent({ knownTools: known })
+    const pushEmbeddedCall = (name: string, args: Record<string, unknown>, id?: string) => {
+      const key = `${name}:${JSON.stringify(args)}`
+      if (toolCalls.some((c) => `${c.toolName}:${JSON.stringify(c.args)}` === key)) return
+      toolCalls.push({ toolName: name, args, toolCallId: id || `call_embedded_${Date.now()}_${toolCalls.length}` })
+      onToolCall?.({ toolName: name, args })
+    }
+
     while (true) {
       const { done, value } = await reader.read()
       if (done) break
@@ -139,9 +155,17 @@ export class OpenRouterService {
         try {
           const data = JSON.parse(jsonStr)
           const delta = data.choices?.[0]?.delta
+          const reasoning = delta?.reasoning ?? delta?.reasoning_content
+          if (reasoning) onReasoning?.(reasoning)
           if (delta?.content) {
-            fullResponse += delta.content
-            onChunk?.(delta.content)
+            const blk = embedded.push(String(delta.content))
+            if (blk.text) {
+              fullResponse += blk.text
+              onChunk?.(blk.text)
+            }
+            for (const call of blk.calls) {
+              pushEmbeddedCall(call.name, call.args, call.id || undefined)
+            }
           }
           if (delta?.tool_calls) {
             for (const tc of delta.tool_calls) {
@@ -178,6 +202,19 @@ export class OpenRouterService {
           }
         } catch { /* skip malformed */ }
       }
+    }
+
+    // Flush any trailing prose / completed descriptors held by the parser.
+    const flushed = embedded.flush()
+    if (flushed.text) {
+      fullResponse += flushed.text
+      onChunk?.(flushed.text)
+    }
+    for (const call of flushed.calls) {
+      pushEmbeddedCall(call.name, call.args, call.id || undefined)
+    }
+    if (toolCalls.length > 0 && finishReason === "stop") {
+      finishReason = "tool_calls" as FinishReason
     }
 
     return {

@@ -1,10 +1,10 @@
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible"
-import { streamText, stepCountIs, type ModelMessage, type LanguageModel } from "ai"
+import { streamText, type FinishReason, type ModelMessage, type LanguageModel } from "ai"
 import { nvidiaConfig } from "../../config/nvidia.config.ts"
 import chalk from "chalk"
 import { recordUsage } from "../../lib/track-usage"
 import { computeCost } from "../../lib/pricing"
-import { isEmptyToolResult, isDeniedToolResult, summarizeToolResult, tcName } from "./tool-result"
+import { executeToolLoop } from "./tool-executor.ts"
 
 export class NvidiaService {
   model: LanguageModel
@@ -42,8 +42,6 @@ export class NvidiaService {
       const systemMessages = messages.filter(m => m.role === "system")
       const nonSystemMessages = messages.filter(m => m.role !== "system")
       const system = systemMessages.map(m => m.content).join("\n")
-      // Capture for closure use inside streamText's onStepFinish callback.
-      const onStepFinishRef = onStepFinish
 
       const hasTools = tools && Object.keys(tools).length > 0
 
@@ -84,164 +82,37 @@ export class NvidiaService {
         }
       }
 
-      let fullResponse = ""
-
-      const seenStepResults: Array<{ toolName: string; result: string }> = []
-      const deniedCounts = new Map<string, number>()
-      let stopForDenialLoop = false
-      const toolCallHistory: Array<{ toolName: string; argsKey: string }> = []
-      let stopForRepetition = false
-
-      const result = streamText({
-        model: this.model,
-        messages: nonSystemMessages,
+      const {content, usage} = await executeToolLoop(
+        this.model,
+        nonSystemMessages,
         system,
         tools,
-        stopWhen: stepCountIs(8),
-        abortSignal: signal,
-        prepareStep: async ({ messages }) => {
-          if (stopForRepetition) {
-            return {
-              messages: [
-                ...messages,
-                {
-                  role: "system" as const,
-                  content:
-                    "SYSTEM NOTICE: You have called the same tools with the same arguments " +
-                    "multiple times without making progress. Stop repeating yourself. " +
-                    "Analyze what you already have and respond to the user.",
-                },
-              ],
-            }
-          }
-          if (stopForDenialLoop) {
-            return {
-              messages: [
-                ...messages,
-                {
-                  role: "system" as const,
-                  content:
-                    "SYSTEM NOTICE: You have called the same permission-protected tool multiple " +
-                    "times after the user denied it. Stop calling it. Respond to the user with " +
-                    "what you have so far and ask for guidance.",
-                },
-              ],
-            }
-          }
-          if (seenStepResults.length === 0) return undefined
-          const allEmpty = seenStepResults.every((r) => isEmptyToolResult(r.result))
-          if (!allEmpty) return undefined
-          const summary = seenStepResults
-            .map((r) => `- ${r.toolName}: ${summarizeToolResult(r.result)}`)
-            .join("\n")
-          return {
-            messages: [
-              ...messages,
-              {
-                role: "system" as const,
-                content:
-                  "SYSTEM NOTICE: All tool calls so far have returned empty or error results. " +
-                  "You have NO source material to answer with. Do NOT invent specifications, pricing, " +
-                  "dates, leaderboard rankings, or any factual claims. Tell the user which tools failed " +
-                  "and what you would need to proceed.\n\nTool outcomes:\n" + summary,
-              },
-            ],
-          }
+        {
+          onChunk,
+          onToolCall,
+          onReasoning,
+          onToolResult,
+          onStepFinish,
+          signal,
         },
-        onStepFinish: async (event) => {
-          if (event.toolCalls?.length) {
-            for (const tc of event.toolCalls) {
-              onToolCall?.({ toolName: tc.toolName, args: (tc as any).input as Record<string, unknown> })
-              // Tool call repetition guard: same tool + same args 3+ times → stop.
-              const args = (tc as any).input ?? {}
-              const argsKey = JSON.stringify(args, Object.keys(args).sort())
-              toolCallHistory.push({ toolName: tc.toolName, argsKey })
-              let repCount = 0
-              for (const h of toolCallHistory) {
-                if (h.toolName === tc.toolName && h.argsKey === argsKey) repCount++
-              }
-              if (repCount >= 3) stopForRepetition = true
-              if (toolCallHistory.length > 12) {
-                toolCallHistory.splice(0, toolCallHistory.length - 12)
-              }
-            }
-          }
-          const toolResults = (event as any).toolResults as
-            | Array<{ toolName?: string; input?: unknown; output?: unknown }>
-            | undefined
-          if (toolResults?.length) {
-            for (const tr of toolResults) {
-              const name = tcName(tr.toolName) ?? "unknown"
-              const out = (tr as any).output
-              const text =
-                typeof out === "string"
-                  ? out
-                  : out === undefined || out === null
-                    ? ""
-                    : JSON.stringify(out)
-              seenStepResults.push({ toolName: name, result: text })
-              if (onToolResult) {
-                onToolResult({ toolName: name, args: tr.input, result: text })
-              }
-              if (isDeniedToolResult(text)) {
-                const prev = deniedCounts.get(name) ?? 0
-                const next = prev + 1
-                deniedCounts.set(name, next)
-                if (next >= 2) stopForDenialLoop = true
-              } else {
-                deniedCounts.set(name, 0)
-              }
-            }
-          }
-          if (onStepFinishRef) {
-            const calls = (event.toolCalls ?? []).map((tc: any) => ({
-              toolName: tc.toolName as string,
-              args: (tc as any).input,
-            }))
-            const results = (toolResults ?? []).map((tr: any) => ({
-              toolName: (tcName(tr.toolName) ?? "unknown") as string,
-              args: tr.input,
-              result: (() => {
-                const out = tr.output
-                if (typeof out === "string") return out
-                if (out === undefined || out === null) return ""
-                return JSON.stringify(out)
-              })(),
-            }))
-            onStepFinishRef({
-              stepNumber: (event as any).stepNumber ?? 0,
-              toolCalls: calls,
-              toolResults: results,
-            })
-          }
-        },
-      })
-
-      for await (const chunk of result.textStream) {
-        fullResponse += chunk
-        onChunk?.(chunk)
-      }
-
-      const [finishReason, usage] = await Promise.all([
-        result.finishReason,
-        result.usage,
-      ])
+      )
+      const resolved = await usage
 
       recordUsage({
         provider: "nvidia",
         model: this.modelName,
-        inputTokens: usage.inputTokens ?? 0,
-        outputTokens: usage.outputTokens ?? 0,
-        cachedInputTokens: usage.inputTokenDetails?.cacheReadTokens ?? 0,
-        totalTokens: usage.totalTokens ?? 0,
-        costUsd: computeCost(this.modelName, usage.inputTokens ?? 0, usage.outputTokens ?? 0, usage.inputTokenDetails?.cacheReadTokens ?? 0),
+        inputTokens: resolved.inputTokens ?? 0,
+        outputTokens: resolved.outputTokens ?? 0,
+        cachedInputTokens: resolved.inputTokenDetails?.cacheReadTokens ?? 0,
+        totalTokens: resolved.totalTokens ?? 0,
+        costUsd: computeCost(this.modelName, resolved.inputTokens ?? 0, resolved.outputTokens ?? 0, resolved.inputTokenDetails?.cacheReadTokens ?? 0),
         durationMs: null,
       })
 
       return {
-        content: fullResponse,
-        finishReason,
-        usage,
+        content,
+        finishReason: "stop" as FinishReason,
+        usage: resolved,
       }
     } catch (error: any) {
       if (error?.name === "AbortError") throw error

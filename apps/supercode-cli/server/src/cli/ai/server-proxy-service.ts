@@ -3,6 +3,7 @@ import { zodToJsonSchema } from "zod-to-json-schema"
 import type { ModelMessage, FinishReason, LanguageModelUsage } from "ai"
 import { isEmptyToolResult, isDeniedToolResult, summarizeToolResult } from "./tool-result"
 import { appendProxyUsage } from "src/lib/token-budget"
+import { parseStreamedContent, KNOWN_TOOL_NAMES } from "src/lib/embedded-tool-calls"
 import prisma from "src/lib/prisma"
 
 const BASE_URL = process.env.SUPERCODE_SERVER_URL || "https://supercode-8w7e.onrender.com"
@@ -167,6 +168,22 @@ export class ServerProxyService {
         outputTokenDetails: { textTokens: 0, reasoningTokens: 0 },
         totalTokens: 0,
       }
+      // Client-side safety net: MiniMax (and other models) sometimes leak tool
+      // calls as raw text. Recover them here for every provider/tier, even when
+      // the remote server hasn't been redeployed with the latest parser.
+      const known = new Set(KNOWN_TOOL_NAMES)
+      if (tools && typeof tools === "object") {
+        for (const name of Object.keys(tools)) known.add(name)
+      }
+      const embedded = parseStreamedContent({ knownTools: known })
+      const pushEmbeddedCall = (name: string, args: Record<string, unknown>, id?: string) => {
+        const toolCallId = id || `call_${Date.now()}_${toolCalls.length}`
+        // Dedupe against structured tool-call events already received.
+        const key = `${name}:${JSON.stringify(args)}`
+        if (toolCalls.some((c) => `${c.toolName}:${JSON.stringify(c.args)}` === key)) return
+        toolCalls.push({ toolName: name, args, toolCallId })
+        onToolCall?.({ toolName: name, args })
+      }
 
       while (true) {
         const { done, value } = await reader.read()
@@ -182,10 +199,20 @@ export class ServerProxyService {
           try {
             const event = JSON.parse(trimmed)
             switch (event.type) {
-              case "text":
-                fullResponse += event.content
-                onChunk?.(event.content)
+              case "text": {
+                // Route through the embedded parser so MiniMax junk never
+                // reaches the TUI, and any inline tool descriptors become
+                // real tool-call events.
+                const blk = embedded.push(typeof event.content === "string" ? event.content : "")
+                if (blk.text) {
+                  fullResponse += blk.text
+                  onChunk?.(blk.text)
+                }
+                for (const call of blk.calls) {
+                  pushEmbeddedCall(call.name, call.args, call.id || undefined)
+                }
                 break
+              }
               case "reasoning":
                 onReasoning?.(event.content)
                 break
@@ -210,6 +237,19 @@ export class ServerProxyService {
             }
           } catch { /* skip malformed */ }
         }
+      }
+
+      // Flush any trailing prose / completed descriptors held by the parser.
+      const flushed = embedded.flush()
+      if (flushed.text) {
+        fullResponse += flushed.text
+        onChunk?.(flushed.text)
+      }
+      for (const call of flushed.calls) {
+        pushEmbeddedCall(call.name, call.args, call.id || undefined)
+      }
+      if (toolCalls.length > 0 && finishReason === "stop") {
+        finishReason = "tool-calls" as FinishReason
       }
 
       cleanup()

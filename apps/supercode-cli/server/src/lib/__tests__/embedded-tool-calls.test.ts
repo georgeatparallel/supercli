@@ -1,5 +1,9 @@
 import { test, expect } from "bun:test"
-import { parseStreamedContent } from "../embedded-tool-calls"
+import {
+  parseStreamedContent,
+  extractEmbeddedToolCalls,
+  stripControlTokens,
+} from "../embedded-tool-calls"
 
 function drain(parser: any, chunks: string[]) {
   const text: string[] = []
@@ -58,6 +62,58 @@ test("xml invoke with explicit quoted name + multiple params", () => {
   expect(c.name).toBe("edit_file")
   expect(c.args).toEqual({ path: "/a/b.ts", old_string: "foo", new_string: "bar" })
   expect(out.text).toBe("after")
+})
+
+test("minimax <invoke> with <command>/<description> tags (live leak repro)", () => {
+  const out = drain(
+    parseStreamedContent(),
+    [
+      ']<]minimax[>[<tool_call><invoke name="run_command"><command>git diff --cached cortex-sdk.md</command><description>Show full staged diff</description></invoke></tool_call>]',
+    ],
+  )
+  expect(out.calls.length).toBe(1)
+  expect(out.calls[0].name).toBe("run_command")
+  expect(out.calls[0].args).toEqual({
+    command: "git diff --cached cortex-sdk.md",
+    description: "Show full staged diff",
+  })
+  expect(out.text).toBe("")
+})
+
+test("bare <invoke> without <tool_call> wrapper is recovered", () => {
+  const out = drain(
+    parseStreamedContent(),
+    ['<invoke name="run_command"><command>git status</command><description>Check status</description></invoke>'],
+  )
+  expect(out.calls.length).toBe(1)
+  expect(out.calls[0].name).toBe("run_command")
+  expect(out.calls[0].args.command).toBe("git status")
+  expect(out.text).toBe("")
+})
+
+test("bare <invoke> split across chunks is held until close", () => {
+  const out = drain(
+    parseStreamedContent(),
+    ['<invoke name="run_command"><command>git ', "diff --staged</command></invoke>"],
+  )
+  expect(out.calls.length).toBe(1)
+  expect(out.calls[0].args.command).toBe("git diff --staged")
+  expect(out.text).toBe("")
+})
+
+test("<invoke> with no args is dropped, not leaked or executed", () => {
+  const out = drain(
+    parseStreamedContent(),
+    ["<tool_call><invoke name=run_command></invoke></tool_call>"],
+  )
+  expect(out.calls.length).toBe(0)
+  expect(out.text).toBe("")
+})
+
+test("unclosed <invoke> is dropped on flush, not leaked", () => {
+  const out = drain(parseStreamedContent(), ["<invoke name=\"run_command\"><command>git"])
+  expect(out.calls.length).toBe(0)
+  expect(out.text).toBe("")
 })
 
 test("trailing prose after a block is emitted", () => {
@@ -137,4 +193,84 @@ test("json descriptor with nested braces in a string arg", () => {
   )
   expect(out.calls.length).toBe(1)
   expect(out.calls[0].args.old_string).toBe("{foo}")
+})
+
+// ─── MiniMax-M3 shapes that were leaking as raw text ───────────────────────
+
+test("minimax tool-key descriptor with top-level args", () => {
+  const out = drain(
+    parseStreamedContent(),
+    [
+      'I\'ll check what\'s currently staged.]<]minimax[>[<tool_call>\n{ "tool": "run_command", "command": "git status", "description": "Check git status for staged changes" }\n{ "tool": "run_command", "command": "git diff --staged --stat", "description": "Show summary of staged changes" }',
+    ],
+  )
+  expect(out.text).toBe("I'll check what's currently staged.")
+  expect(out.calls.length).toBe(2)
+  expect(out.calls[0]).toEqual({
+    name: "run_command",
+    args: {
+      command: "git status",
+      description: "Check git status for staged changes",
+    },
+    id: "",
+  })
+  expect(out.calls[1].name).toBe("run_command")
+  expect(out.calls[1].args.command).toBe("git diff --staged --stat")
+})
+
+test("minimax tool-key descriptor split across chunks", () => {
+  const out = drain(
+    parseStreamedContent(),
+    [
+      "Checking.]<]minimax[>",
+      '[<tool_call>\n{ "tool": "run_command", "com',
+      'mand": "git status" }',
+    ],
+  )
+  expect(out.text).toBe("Checking.")
+  expect(out.calls.length).toBe(1)
+  expect(out.calls[0].name).toBe("run_command")
+  expect(out.calls[0].args.command).toBe("git status")
+})
+
+test("minimax tool-key with whitespace around braces", () => {
+  const out = drain(
+    parseStreamedContent(),
+    ['{ "tool" : "read_file" , "path" : "/a.ts" }'],
+  )
+  expect(out.calls.length).toBe(1)
+  expect(out.calls[0].name).toBe("read_file")
+  expect(out.calls[0].args.path).toBe("/a.ts")
+})
+
+test("pipe-style special tokens are stripped", () => {
+  const out = drain(
+    parseStreamedContent(),
+    ["hello <|tool_call_begin|> world <|minimax|>"],
+  )
+  expect(out.text).toBe("hello  world ")
+  expect(out.calls.length).toBe(0)
+})
+
+test("stripControlTokens helper", () => {
+  expect(stripControlTokens("x]<]minimax[>[<tool_call>y")).toBe("xy")
+  expect(stripControlTokens("a<|foo|>b")).toBe("ab")
+})
+
+test("extractEmbeddedToolCalls one-shot helper", () => {
+  const out = extractEmbeddedToolCalls(
+    'Looking.]<]minimax[>[<tool_call>\n{ "tool": "run_command", "command": "ls" }',
+  )
+  expect(out.text).toBe("Looking.")
+  expect(out.calls.length).toBe(1)
+  expect(out.calls[0]!.args.command).toBe("ls")
+})
+
+test("json name key still works with surrounding whitespace", () => {
+  const out = drain(
+    parseStreamedContent(),
+    ['{ "name": "run_command", "parameters": { "command": "pwd" } }'],
+  )
+  expect(out.calls.length).toBe(1)
+  expect(out.calls[0].args.command).toBe("pwd")
 })
