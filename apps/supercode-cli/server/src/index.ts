@@ -15,9 +15,17 @@ import refundRouter from "./api/billing/refund"
 import webhookRouter from "./api/billing/webhook"
 import { checkPlanGate } from "./lib/plan-gate"
 import { transcribeAudio } from "./voice/speech"
+import {
+  getVoiceSession,
+  isFinalizeAction,
+  finalizeSlugFor,
+  hasConfirmation,
+  hasDenial,
+} from "./voice/voiceSession"
 import { tmpdir } from "os"
 import { join } from "path"
 import { writeFileSync, unlinkSync } from "fs"
+import { exec } from "child_process"
 import { randomUUID } from "crypto"
 import { parseStreamedContent } from "./lib/embedded-tool-calls"
 
@@ -1587,6 +1595,174 @@ app.put("/api/conversations/:id/title", async (req, res) => {
 
 const FIRECRAWL_BASE = "https://api.firecrawl.dev/v2"
 const EXA_BASE = "https://api.exa.ai"
+const CONTEXT_DEV_BASE = "https://api.context.dev/v1"
+
+/// Compact human-readable summary of a Composio tool result for the app's
+/// Dynamic Island tool-call metadata (capped to 300 chars).
+function summarizeToolEvent(data: unknown, error: unknown, successful: boolean): string {
+  if (!successful) {
+    const msg = typeof error === "string" ? error : error != null ? JSON.stringify(error) : "Tool execution failed"
+    return msg.length > 300 ? `${msg.slice(0, 300)}…` : msg
+  }
+  if (data == null) return "Done"
+  if (typeof data === "string") return data.length > 300 ? `${data.slice(0, 300)}…` : data
+  const text = JSON.stringify(data)
+  return text.length > 300 ? `${text.slice(0, 300)}…` : text
+}
+
+/// Web search for the voice agent. Prefers the provider the model called, then
+/// falls back to the other configured provider so a single key still works.
+async function runWebSearch(
+  query: string,
+  numResults: number,
+  preferred: "context_dev_search" | "exa_search",
+): Promise<{
+  results: Array<{ title: string; snippet: string; url: string }>
+  provider: "contextdev" | "exa" | "none"
+  error?: string
+}> {
+  const contextDevKey = process.env.CONTEXT_DEV_API_KEY || process.env.CONTEXTDEV_API_KEY
+  const exaKey = process.env.EXA_API_KEY
+  const order: Array<"contextdev" | "exa"> = preferred === "context_dev_search" ? ["contextdev", "exa"] : ["exa", "contextdev"]
+
+  for (const provider of order) {
+    if (provider === "contextdev" && contextDevKey) {
+      try {
+        const res = await fetch(`${CONTEXT_DEV_BASE}/web/search`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${contextDevKey}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ query, numResults }),
+          signal: AbortSignal.timeout(15_000),
+        })
+        if (!res.ok) continue
+        const data = (await res.json()) as {
+          results?: Array<{ title?: string; description?: string; url?: string }>
+        }
+        return {
+          provider: "contextdev",
+          results: (data.results ?? []).slice(0, numResults).map((r) => ({
+            title: r.title ?? "",
+            snippet: r.description ?? "",
+            url: r.url ?? "",
+          })),
+        }
+      } catch { /* fall through to the next provider */ }
+    }
+    if (provider === "exa" && exaKey) {
+      try {
+        const res = await fetch(`${EXA_BASE}/search`, {
+          method: "POST",
+          headers: { "x-api-key": exaKey, "Content-Type": "application/json" },
+          body: JSON.stringify({ query, numResults }),
+          signal: AbortSignal.timeout(15_000),
+        })
+        if (!res.ok) continue
+        const data = (await res.json()) as {
+          results?: Array<{ title?: string; text?: string; snippet?: string; url?: string }>
+        }
+        return {
+          provider: "exa",
+          results: (data.results ?? []).slice(0, numResults).map((r) => ({
+            title: r.title ?? "",
+            snippet: r.text ?? r.snippet ?? "",
+            url: r.url ?? "",
+          })),
+        }
+      } catch { /* fall through */ }
+    }
+  }
+  return { provider: "none", results: [], error: "Web search not configured" }
+}
+
+/// Opens an app or website on the user's Mac via the `open` command. The server
+/// runs locally, so this launches real applications and the default browser.
+function openLocalTarget(app: string, url: string): Promise<{ message?: string; error?: string }> {
+  return new Promise((resolve) => {
+    const esc = (s: string) => s.replace(/["\\`$]/g, "")
+
+    let command: string
+    if (url) {
+      const target = /^https?:\/\//.test(url) ? url : `https://${url}`
+      command = `open "${esc(target)}"`
+    } else if (app) {
+      command = `open -a "${esc(app)}"`
+    } else {
+      resolve({ error: "open_app: provide either an app name or a URL" })
+      return
+    }
+
+    exec(command, { timeout: 15_000 }, (err, _stdout, stderr) => {
+      if (err) resolve({ error: stderr?.trim() || err.message })
+      else resolve({ message: url ? `Opened ${url}` : `Opened ${app}` })
+    })
+  })
+}
+
+/// System controls for the voice agent: volume, lock screen, sleep display,
+/// quit apps, and media playback. Volume/lock/sleep need no special
+/// permissions; media keys use System Events and require Accessibility access.
+function runSystemControl(action: string, appName = ""): Promise<{ message?: string; error?: string }> {
+  return new Promise((resolve) => {
+    const esc = (s: string) => s.replace(/["\\`$]/g, "")
+    const run = (command: string, args: string[], successMsg: string) => {
+      exec(`"${command}"${args.map((a) => ` ${JSON.stringify(a)}`).join("")}`, { timeout: 15_000 }, (err, _stdout, stderr) => {
+        if (err) resolve({ error: stderr?.trim() || err.message || "Command failed" })
+        else resolve({ message: successMsg })
+      })
+    }
+    const osa = (script: string, successMsg: string) => {
+      exec(`osascript -e ${JSON.stringify(script)}`, { timeout: 15_000 }, (err, _stdout, stderr) => {
+        if (err) resolve({ error: stderr?.trim() || err.message || "osascript failed" })
+        else resolve({ message: successMsg })
+      })
+    }
+    const mediaKey = (code: number, successMsg: string) =>
+      osa(`tell application "System Events" to key code ${code} using control down`, successMsg)
+
+    switch (action) {
+      case "volume_up":
+      case "volume_down": {
+        exec(`osascript -e ${JSON.stringify("output volume of (get volume settings)")}`, { timeout: 15_000 }, (err, stdout) => {
+          if (err) { resolve({ error: err.message || "Failed to read volume" }); return }
+          const current = Math.max(0, Math.min(100, parseInt(stdout?.trim() || "50", 10) || 50))
+          const next = action === "volume_up" ? Math.min(current + 10, 100) : Math.max(current - 10, 0)
+          osa(`set volume output volume ${next}`, `Volume ${action === "volume_up" ? "increased" : "decreased"} to ${next}`)
+        })
+        break
+      }
+      case "mute":
+        osa("set volume output muted true", "Volume muted")
+        break
+      case "unmute":
+        osa("set volume output muted false", "Volume unmuted")
+        break
+      case "lock_screen":
+        run("/System/Library/CoreServices/Menu Extras/User.menu/Contents/Resources/CGSession", ["-suspend"], "Screen locked")
+        break
+      case "sleep_display":
+        run("/usr/bin/pmset", ["displaysleepnow"], "Display put to sleep")
+        break
+      case "quit_app":
+        if (!appName) {
+          resolve({ error: "system_control quit_app: provide the app name in `app`" })
+          break
+        }
+        osa(`tell application "${esc(appName)}" to quit`, `Quit ${appName}`)
+        break
+      case "media_play_pause":
+        mediaKey(16, "Media play/pause toggled")
+        break
+      case "media_next":
+        mediaKey(17, "Next track")
+        break
+      case "media_prev":
+        mediaKey(18, "Previous track")
+        break
+      default:
+        resolve({ error: `system_control: unknown action "${action}"` })
+    }
+  })
+}
 
 app.post("/api/tools/firecrawl-search", async (req, res) => {
   try {
@@ -1892,11 +2068,20 @@ app.post("/api/voice/tts", async (req, res) => {
 })
 
 // ---------------------------------------------------------------------------
-// /api/voice/chat — non-streaming LLM chat, returns { reply }
+// /api/voice/chat — non-streaming LLM chat with optional tool-use
 // ---------------------------------------------------------------------------
 app.post("/api/voice/chat", async (req, res) => {
   try {
-    const { messages, model: modelParam, provider = "concentrateai" } = req.body
+    const {
+      messages,
+      model: modelParam,
+      provider = "concentrateai",
+      tools: useTools = false,
+      composioApiKey,
+      composioUserId,
+      screenImage,
+      screenSelection = false,
+    } = req.body
     if (!messages || !Array.isArray(messages) || messages.length === 0) {
       res.status(400).json({ error: "messages array is required" })
       return
@@ -1904,14 +2089,264 @@ app.post("/api/voice/chat", async (req, res) => {
 
     const systemMessages = messages.filter((m: any) => m.role === "system")
     const nonSystemMessages = messages.filter((m: any) => m.role !== "system")
-    const system = systemMessages.map((m: any) => m.content).join("\n")
+
+    // When tools are enabled, prepend a system directive so the LLM knows
+    // it can search the web and open apps/websites on the user's Mac.
+    const toolDirective = useTools
+      ? "You are Jarvis, a concise and helpful AI assistant running on the user's Mac. " +
+        "You have web search and can open apps, browsers, and websites on the computer. " +
+        "When you don't know the answer to a factual question, use one of the web search tools " +
+        "(context_dev_search, exa_search, or firecrawl_search) to find current information — " +
+        "pick whichever fits the request: firecrawl_search for deep research or domain-filtered " +
+        "searches, context_dev_search or exa_search for general queries. " +
+        "When the user asks you to open an app, a browser, or a website, use the open_app tool — " +
+        "you are allowed to do this and must not refuse. " +
+        "When the user asks you to control their Mac — change the volume, mute or unmute, lock the " +
+        "screen, put the display to sleep, quit an app, or control media playback — use the " +
+        "system_control tool; you are allowed to do this and must not refuse. " +
+        "Keep replies under 3 sentences unless asked for detail. " +
+        "When citing search results, mention the source briefly."
+      : ""
+
+    // When a screenshot of the user's screen is attached, tell the model it can
+    // see the screen and should answer screen-related questions from the image.
+    const hasScreenImage = typeof screenImage === "string" && screenImage.length > 0
+    const hasScreenSelection = screenSelection === true && hasScreenImage
+    console.log(
+      `[voice/chat] screenImage=${hasScreenImage ? `yes (${(screenImage.length / 1024).toFixed(0)}KB)` : "no"} screenSelection=${hasScreenSelection ? "yes" : "no"} model=${modelParam ?? "auto"} provider=${provider}`,
+    )
+    const screenDirective = hasScreenImage
+      ? "The user attached a screenshot of their current screen. You can see exactly " +
+        "what is on their screen (apps, windows, text, UI elements). When the user asks " +
+        "about something on screen (e.g. \"what's on my screen?\", \"read this\"), answer " +
+        "from the screenshot. If a visible error appears, diagnose it from the image." +
+        (hasScreenSelection
+          ? " The attached screenshot shows ONLY the region the user selected with " +
+            "Cmd+drag — it is a crop of the full screen, not the whole screen. Focus " +
+            "exclusively on the selected content and ignore anything outside it; the user " +
+            "wants context about exactly this region (e.g. explain just this part of the page)."
+          : "")
+      : ""
+
+    // --- Composio context: expose the user's connected apps as tools ---
+    // The app may pass its own Composio key + user id; otherwise fall back to
+    // the server-level key and all active connected accounts.
+    let composio: any = null
+    let composioConnected: Array<{ slug: string; name: string; accountId: string }> = []
+    let composioTools: any[] = []
+    if (useTools) {
+      const resolvedKey = (composioApiKey as string)?.trim() || process.env.COMPOSIO_API_KEY
+      if (resolvedKey) {
+        try {
+          const { Composio } = await import("@composio/core")
+          composio = new Composio({ apiKey: resolvedKey })
+
+          const listParams: any = {}
+          if (composioUserId) listParams.userIds = [String(composioUserId)]
+          let connectedRes = await (composio.connectedAccounts as any).list(listParams)
+          // Accounts may have been created without a userId; fall back to all
+          // accounts if the userId filter returned nothing.
+          if ((connectedRes.items ?? []).length === 0 && composioUserId) {
+            connectedRes = await (composio.connectedAccounts as any).list({})
+          }
+
+          const toolkitSlugs = new Set<string>()
+          for (const acct of connectedRes.items ?? []) {
+            const slug: string = acct.toolkit?.slug
+            if (slug && acct.status === "ACTIVE") {
+              toolkitSlugs.add(slug)
+              composioConnected.push({
+                slug,
+                name: acct.toolkit?.name || slug,
+                accountId: acct.id,
+              })
+            }
+          }
+
+          if (toolkitSlugs.size > 0) {
+            // Note: in this SDK version a multi-toolkit query returns only the
+            // first toolkit's tools, so query each toolkit separately and merge.
+            const seen = new Set<string>()
+            for (const tk of toolkitSlugs) {
+              try {
+                const toolRes = await (composio.tools as any).getRawComposioTools({ toolkits: [tk] })
+                const list = (Array.isArray(toolRes) ? toolRes : toolRes?.items ?? [])
+                for (const t of list) {
+                  if (!t.isDeprecated && !seen.has(t.slug)) {
+                    seen.add(t.slug)
+                    composioTools.push(t)
+                  }
+                }
+              } catch { /* skip toolkit */ }
+            }
+          }
+        } catch (err: any) {
+          console.error("Composio context setup failed:", err?.message || err)
+          composio = null
+          composioConnected = []
+          composioTools = []
+        }
+      }
+    }
+
+    const composioDirective =
+      composioConnected.length > 0
+        ? "You can access the user's connected apps via Composio tools. " +
+          `Currently connected apps: ${composioConnected.map((c) => c.name).join(", ")}. ` +
+          "Use the provided composio tools to read, write, or update data in these apps when the user asks " +
+          "(e.g. fetch emails, create events, post messages, create/update issues).\n" +
+          "When the user asks you to write, send, post, create, or update something in a connected app " +
+          "(email, message, issue, event, page, pull request), follow this step-by-step workflow:\n" +
+          "1. If any required detail is missing (recipient, subject, message content, title, date, etc.), " +
+          "do NOT call any tool. Ask the user for the missing details.\n" +
+          "2. When all details are provided, prepare the item with the create/draft variant (e.g. gmail_create_draft) " +
+          "— do NOT call the send/finalize variant yet.\n" +
+          "3. After preparing, tell the user it is ready and ask for confirmation, e.g. \"Shall I send it?\" " +
+          "or \"Shall I create it?\".\n" +
+          "4. Only when the user explicitly confirms (yes, send it, go ahead, do it, proceed) call the " +
+          "send/finalize variant (e.g. gmail_send_email). If the user requests changes, use the update variant " +
+          "and ask for confirmation again.\n" +
+          "If the user has already confirmed or is clearly ordering the immediate action, you may execute the " +
+          "finalizing action directly."
+        : ""
+
+    // --- Conversational state: track prepared-but-unconfirmed actions so the
+    // agent can draft first and only finalize after explicit user confirmation.
+    const sessionUserId = String(composioUserId || "voice-user")
+    const session = getVoiceSession(sessionUserId)
+    const lastUserMessage = [...nonSystemMessages].reverse().find((m: any) => m.role === "user")
+    const lastUserText = typeof lastUserMessage?.content === "string" ? lastUserMessage.content : ""
+    const confirmed = hasConfirmation(lastUserText)
+    const denied = !confirmed && hasDenial(lastUserText)
+    if (denied && session.pendingAction) {
+      session.pendingAction = null
+    }
+
+    const system = [toolDirective, screenDirective, composioDirective, ...systemMessages.map((m: any) => m.content)].filter(Boolean).join("\n")
+
+    // Tool definitions in OpenAI format (web search + open_app + composio tools for voice)
+    const toolDefs = useTools
+      ? [
+          {
+            type: "function",
+            function: {
+              name: "context_dev_search",
+              description:
+                "Search the web using Context.dev. Returns relevant results with titles, snippets, and URLs. " +
+                "Use this when you don't know the answer to a factual question.",
+              parameters: {
+                type: "object",
+                properties: {
+                  query: { type: "string", description: "Search query" },
+                  maxResults: { type: "number", description: "Max results (1-10)", default: 5 },
+                },
+                required: ["query"],
+              },
+            },
+          },
+          {
+            type: "function",
+            function: {
+              name: "exa_search",
+              description:
+                "Search the web using Exa. Returns relevant results with titles, snippets, and URLs. " +
+                "Use this when you don't know the answer to a factual question.",
+              parameters: {
+                type: "object",
+                properties: {
+                  query: { type: "string", description: "Search query" },
+                  maxResults: { type: "number", description: "Max results (1-10)", default: 5 },
+                },
+                required: ["query"],
+              },
+            },
+          },
+          {
+            type: "function",
+            function: {
+              name: "firecrawl_search",
+              description:
+                "Search the web using Firecrawl. Returns relevant results with titles, snippets, and URLs. " +
+                "Supports domain filtering. Use this for deep research, documentation lookups, " +
+                "or when you need results filtered to specific domains.",
+              parameters: {
+                type: "object",
+                properties: {
+                  query: { type: "string", description: "Search query" },
+                  maxResults: { type: "number", description: "Max results (1-10)", default: 5 },
+                },
+                required: ["query"],
+              },
+            },
+          },
+          {
+            type: "function",
+            function: {
+              name: "open_app",
+              description:
+                "Open an app, browser, or website on the user's Mac. Use this when the user asks to open " +
+                "any application (e.g. Chrome, Safari, Spotify, WhatsApp), a browser, or a website " +
+                "(e.g. \"open YouTube\", \"open gmail\"). Pass `app` for an installed application " +
+                "(e.g. \"Safari\", \"WhatsApp\") or `url` for a website (e.g. \"https://www.youtube.com\").",
+              parameters: {
+                type: "object",
+                properties: {
+                  app: { type: "string", description: "Name of the application to open, e.g. \"Safari\", \"WhatsApp\"" },
+                  url: { type: "string", description: "Full URL of the website to open, e.g. \"https://www.youtube.com\"" },
+                },
+              },
+            },
+          },
+          {
+            type: "function",
+            function: {
+              name: "system_control",
+              description:
+                "Control the user's Mac system: volume (volume_up, volume_down, mute, unmute), " +
+                "lock the screen (lock_screen), put the display to sleep (sleep_display), quit an " +
+                "app (quit_app — pass the app name in `app`), or control media playback " +
+                "(media_play_pause, media_next, media_prev). Use this when the user asks to change " +
+                "the volume, lock or sleep the Mac, quit an app, or control music/video playback.",
+              parameters: {
+                type: "object",
+                properties: {
+                  action: {
+                    type: "string",
+                    description:
+                      "One of: volume_up, volume_down, mute, unmute, lock_screen, sleep_display, " +
+                      "quit_app, media_play_pause, media_next, media_prev",
+                  },
+                  app: { type: "string", description: "App name for quit_app, e.g. \"Spotify\"" },
+                },
+                required: ["action"],
+              },
+            },
+          },
+          ...composioTools.map((t: any) => {
+            const rawParams = t.inputParameters
+            const parameters =
+              rawParams && typeof rawParams === "object" && !("_def" in rawParams)
+                ? rawParams
+                : { type: "object", properties: {} }
+            return {
+              type: "function",
+              function: {
+                name: t.slug,
+                description: t.description || t.name,
+                parameters,
+              },
+            }
+          }),
+        ]
+      : undefined
 
     if (provider === "concentrateai") {
       const apiKey = process.env.CONCENTRATEAI_API_KEY
       if (!apiKey) { res.status(500).json({ error: "ConcentrateAI not configured" }); return }
 
-      const model = modelParam || "deepseek-v4-flash"
-      const chatStart = Date.now()
+      // When a screenshot is attached, route to a vision-capable model.
+      const defaultVisionModel = process.env.SCREEN_VISION_MODEL || "qwen3-vl-flash"
+      const model = modelParam || (hasScreenImage ? defaultVisionModel : "deepseek-v4-flash")
 
       const apiMessages = nonSystemMessages.map((m: any) => ({
         role: m.role,
@@ -1921,17 +2356,33 @@ app.post("/api/voice/chat", async (req, res) => {
         apiMessages.unshift({ role: "system", content: system })
       }
 
+      // Attach the screenshot as a multimodal image part on the last user message.
+      // OpenAI-style content arrays keep tool follow-up working because the image
+      // lives on the user message that is replayed in the second call.
+      if (hasScreenImage && apiMessages.length > 0) {
+        const last = apiMessages[apiMessages.length - 1] as any
+        const text = typeof last.content === "string" ? last.content : ""
+        last.content = [
+          { type: "text", text },
+          { type: "image_url", image_url: { url: screenImage } },
+        ]
+      }
+
+      // --- First LLM call (with tools) ---
+      const body: any = {
+        model,
+        messages: apiMessages,
+        max_tokens: 4096,
+        temperature: 0.7,
+        stream: false,
+      }
+      if (toolDefs) body.tools = toolDefs
+
       const response = await fetch("https://api.concentrate.ai/v1/chat/completions", {
         method: "POST",
         headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model,
-          messages: apiMessages,
-          max_tokens: 4096,
-          temperature: 0.7,
-          stream: false,
-        }),
-        signal: AbortSignal.timeout(30_000),
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(toolDefs ? 90_000 : 30_000),
       })
 
       if (!response.ok) {
@@ -1941,11 +2392,355 @@ app.post("/api/voice/chat", async (req, res) => {
       }
 
       const data: any = await response.json()
-      const reply = data.choices?.[0]?.message?.content ?? ""
+      const assistantMessage = data.choices?.[0]?.message
 
-      const inputTokens = data.usage?.prompt_tokens ?? 0
-      const outputTokens = data.usage?.completion_tokens ?? 0
+      // --- Handle tool calls (max 1 round for voice) ---
+      if (assistantMessage?.tool_calls?.length > 0 || (confirmed && session.pendingAction !== null && composio)) {
+        const toolResults: Array<{ name: string; text: string }> = []
+        // Metadata for each executed tool, returned to the app so the Dynamic
+        // Island can render per-app activity (slug, toolkit, app, status, summary).
+        const toolEvents: Array<{
+          slug: string
+          toolkit: string | null
+          app: string | null
+          status: "success" | "error" | "pending"
+          summary: string
+          arguments: Record<string, unknown>
+        }> = []
 
+        for (const toolCall of assistantMessage.tool_calls) {
+          const fnName = toolCall.function?.name
+          let fnArgs: Record<string, unknown> = {}
+          try {
+            fnArgs = typeof toolCall.function?.arguments === "string"
+              ? JSON.parse(toolCall.function.arguments)
+              : (toolCall.function?.arguments ?? {})
+          } catch { /* ignore parse errors */ }
+
+          let toolResult = ""
+
+          if (fnName === "exa_search" || fnName === "context_dev_search") {
+            const query = String(fnArgs.query ?? "")
+            const numResults = Math.min((fnArgs.maxResults as number) ?? 5, 10)
+            const { results, provider, error } = await runWebSearch(query, numResults, fnName)
+            toolResult = error
+              ? JSON.stringify({ error })
+              : JSON.stringify({ results })
+            toolEvents.push({
+              slug: fnName,
+              toolkit: provider,
+              app: "Web Search",
+              status: error ? "error" : "success",
+              summary: error
+                ? error
+                : results.length > 0
+                  ? `Found ${results.length} result${results.length === 1 ? "" : "s"} for "${query}"`
+                  : "No search results found",
+              arguments: fnArgs,
+            })
+          } else if (fnName === "firecrawl_search") {
+            const query = String(fnArgs.query ?? "")
+            const numResults = Math.min((fnArgs.maxResults as number) ?? 5, 10)
+            const apiKey = process.env.FIRECRAWL_API_KEY
+            let results: Array<{ title: string; snippet: string; url: string }> = []
+            let error: string | undefined
+            if (!apiKey) {
+              error = "Firecrawl not configured on server"
+            } else {
+              try {
+                const response = await fetch(`${FIRECRAWL_BASE}/search`, {
+                  method: "POST",
+                  headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+                  body: JSON.stringify({ query, limit: numResults, sources: [{ type: "web" }] }),
+                  signal: AbortSignal.timeout(30000),
+                })
+                const data: any = await response.json()
+                if (!response.ok) {
+                  error = data?.error || `Firecrawl search failed (${response.status})`
+                } else {
+                  const webResults = Array.isArray(data?.data?.web) ? data.data.web : []
+                  const newsResults = Array.isArray(data?.data?.news) ? data.data.news : []
+                  results = [...webResults, ...newsResults].slice(0, numResults).map((item: any) => ({
+                    title: String(item.title ?? ""),
+                    snippet: String(item.description ?? item.snippet ?? ""),
+                    url: String(item.url ?? item.link ?? ""),
+                  }))
+                }
+              } catch (e: any) {
+                error = e?.message || "Firecrawl search failed"
+              }
+            }
+            toolResult = error ? JSON.stringify({ error }) : JSON.stringify({ results })
+            toolEvents.push({
+              slug: fnName,
+              toolkit: "firecrawl",
+              app: "Web Search",
+              status: error ? "error" : "success",
+              summary: error
+                ? error
+                : results.length > 0
+                  ? `Found ${results.length} result${results.length === 1 ? "" : "s"} for "${query}"`
+                  : "No search results found",
+              arguments: fnArgs,
+            })
+          } else if (fnName === "open_app") {
+            const app = typeof fnArgs.app === "string" ? fnArgs.app.trim() : ""
+            const url = typeof fnArgs.url === "string" ? fnArgs.url.trim() : ""
+            try {
+              const outcome = await openLocalTarget(app, url)
+              toolResult = JSON.stringify(outcome)
+              toolEvents.push({
+                slug: "open_app",
+                toolkit: "local",
+                app: app || url || "Browser",
+                status: outcome.error ? "error" : "success",
+                summary: outcome.error ? outcome.error : outcome.message ?? "Done",
+                arguments: fnArgs,
+              })
+            } catch (err: any) {
+              toolResult = JSON.stringify({ error: err.message || "Failed to open" })
+              toolEvents.push({
+                slug: "open_app",
+                toolkit: "local",
+                app: app || url || "Browser",
+                status: "error",
+                summary: err.message || "Failed to open",
+                arguments: fnArgs,
+              })
+            }
+          } else if (fnName === "system_control") {
+            const action = typeof fnArgs.action === "string" ? fnArgs.action.trim() : ""
+            const app = typeof fnArgs.app === "string" ? fnArgs.app.trim() : ""
+            try {
+              const outcome = await runSystemControl(action, app)
+              toolResult = JSON.stringify(outcome)
+              toolEvents.push({
+                slug: "system_control",
+                toolkit: "local",
+                app: app || action || "System",
+                status: outcome.error ? "error" : "success",
+                summary: outcome.error ? outcome.error : outcome.message ?? "Done",
+                arguments: fnArgs,
+              })
+            } catch (err: any) {
+              toolResult = JSON.stringify({ error: err.message || "System control failed" })
+              toolEvents.push({
+                slug: "system_control",
+                toolkit: "local",
+                app: app || action || "System",
+                status: "error",
+                summary: err.message || "System control failed",
+                arguments: fnArgs,
+              })
+            }
+          } else if (composio && fnName) {
+            const tool = composioTools.find((t: any) => t.slug === fnName)
+            const conn = composioConnected.find((c) => c.slug === tool?.toolkit?.slug)
+
+            // Finalizing actions (send, post, create, update, ...) are deferred
+            // until the user explicitly confirms. We store the prepared action
+            // in the session and emit a "pending" event so the app still shows
+            // the pre-filled compose panel.
+            if (isFinalizeAction(fnName) && !confirmed) {
+              session.pendingAction = {
+                slug: fnName,
+                args: fnArgs,
+                toolkit: tool?.toolkit?.slug ?? null,
+                app: conn?.name ?? tool?.toolkit?.name ?? fnName,
+              }
+              toolResult = JSON.stringify({
+                deferred: true,
+                note: `Prepared ${fnName}${Object.keys(fnArgs).length > 0 ? " with " + Object.entries(fnArgs).map(([k, v]) => `${k}=${String(v).slice(0, 60)}`).join(", ") : ""} — awaiting your confirmation.`,
+              })
+              toolEvents.push({
+                slug: fnName,
+                toolkit: tool?.toolkit?.slug ?? null,
+                app: conn?.name ?? tool?.toolkit?.name ?? fnName,
+                status: "pending",
+                summary: "Ready — awaiting your confirmation",
+                arguments: fnArgs,
+              })
+            } else {
+              // Confirmed finalize: reuse the stored args as a fallback so a
+              // bare "yes" still executes with the originally prepared values.
+              const storedPending = session.pendingAction
+              if (isFinalizeAction(fnName) && storedPending && storedPending.slug === fnName) {
+                fnArgs = { ...storedPending.args, ...fnArgs }
+                session.pendingAction = null
+              }
+              try {
+                const execRes = await composio.tools.execute(fnName, {
+                  connectedAccountId: conn?.accountId,
+                  userId: sessionUserId,
+                  arguments: fnArgs,
+                  dangerouslySkipVersionCheck: true,
+                })
+                toolResult = JSON.stringify({
+                  data: execRes?.data ?? null,
+                  error: execRes?.error ?? null,
+                  successful: execRes?.successful ?? false,
+                })
+                toolEvents.push({
+                  slug: fnName,
+                  toolkit: tool?.toolkit?.slug ?? null,
+                  app: conn?.name ?? tool?.toolkit?.name ?? fnName,
+                  status: execRes?.successful ? "success" : "error",
+                  summary: summarizeToolEvent(execRes?.data, execRes?.error, execRes?.successful),
+                  arguments: fnArgs,
+                })
+                // A successful draft/prepare action records the follow-up
+                // finalizing action, so a later "yes" can send it.
+                const finalizeSlug = finalizeSlugFor(fnName)
+                if (execRes?.successful && finalizeSlug !== fnName && isFinalizeAction(finalizeSlug)) {
+                  session.pendingAction = {
+                    slug: finalizeSlug,
+                    args: fnArgs,
+                    toolkit: tool?.toolkit?.slug ?? null,
+                    app: conn?.name ?? tool?.toolkit?.name ?? fnName,
+                  }
+                }
+              } catch (err: any) {
+                toolResult = JSON.stringify({ error: err.message || "Composio tool failed" })
+                toolEvents.push({
+                  slug: fnName,
+                  toolkit: tool?.toolkit?.slug ?? null,
+                  app: conn?.name ?? tool?.toolkit?.name ?? fnName,
+                  status: "error",
+                  summary: err.message || "Composio tool failed",
+                  arguments: fnArgs,
+                })
+              }
+            }
+          } else {
+            toolResult = JSON.stringify({ error: `Unknown tool: ${fnName}` })
+            toolEvents.push({
+              slug: fnName ?? "unknown",
+              toolkit: null,
+              app: null,
+              status: "error",
+              summary: `Unknown tool: ${fnName}`,
+              arguments: fnArgs,
+            })
+          }
+
+          // Format the result for the follow-up prompt
+          let formatted = ""
+          try {
+            const parsed = JSON.parse(toolResult)
+            if (parsed.deferred) {
+              formatted = parsed.note || "Action prepared — awaiting your confirmation."
+            } else if (parsed.error) {
+              formatted = `Error: ${parsed.error}`
+            } else if (Array.isArray(parsed.results)) {
+              formatted = parsed.results.length > 0
+                ? parsed.results
+                    .map((r: any) => `- ${r.title}: ${r.snippet || "(no snippet)"} [Source: ${r.url}]`)
+                    .join("\n")
+                : "No search results found."
+            } else if (parsed.message) {
+              formatted = parsed.message
+            } else if (parsed.data !== undefined && parsed.data !== null) {
+              formatted = typeof parsed.data === "string" ? parsed.data : JSON.stringify(parsed.data)
+            } else {
+              formatted = toolResult
+            }
+          } catch {
+            formatted = toolResult
+          }
+
+          toolResults.push({ name: fnName ?? "unknown", text: formatted })
+        }
+
+        // A confirmed "yes" with no new tool call executes the previously
+        // prepared action deterministically, so the LLM doesn't have to re-call it.
+        if (toolResults.length === 0 && confirmed && session.pendingAction && composio) {
+          const pending = session.pendingAction
+          session.pendingAction = null
+          const tool = composioTools.find((t: any) => t.slug === pending.slug)
+          const conn = composioConnected.find((c) => c.slug === pending.toolkit)
+          try {
+            const execRes = await composio.tools.execute(pending.slug, {
+              connectedAccountId: conn?.accountId,
+              userId: sessionUserId,
+              arguments: pending.args,
+              dangerouslySkipVersionCheck: true,
+            })
+            const text = JSON.stringify({
+              data: execRes?.data ?? null,
+              error: execRes?.error ?? null,
+              successful: execRes?.successful ?? false,
+            })
+            let formatted = ""
+            try {
+              const parsed = JSON.parse(text)
+              formatted = parsed.error
+                ? `Error: ${parsed.error}`
+                : parsed.data !== undefined && parsed.data !== null
+                  ? typeof parsed.data === "string"
+                    ? parsed.data
+                    : JSON.stringify(parsed.data)
+                  : text
+            } catch {
+              formatted = text
+            }
+            toolResults.push({ name: pending.slug, text: formatted })
+            toolEvents.push({
+              slug: pending.slug,
+              toolkit: pending.toolkit,
+              app: pending.app,
+              status: execRes?.successful ? "success" : "error",
+              summary: summarizeToolEvent(execRes?.data, execRes?.error, execRes?.successful),
+              arguments: pending.args,
+            })
+          } catch (err: any) {
+            toolResults.push({ name: pending.slug, text: `Error: ${err.message || "Composio tool failed"}` })
+            toolEvents.push({
+              slug: pending.slug,
+              toolkit: pending.toolkit,
+              app: pending.app,
+              status: "error",
+              summary: err.message || "Composio tool failed",
+              arguments: pending.args,
+            })
+          }
+        }
+
+        // --- Second LLM call: inject tool results as context ---
+        // deepseek-v4-flash doesn't fully support the tool round-trip,
+        // so we inject results directly and ask for a summary.
+        const toolSummary = toolResults.map((r) => `--- ${r.name} ---\n${r.text}`).join("\n\n")
+
+        const followUpMessages = [
+          ...apiMessages,
+          {
+            role: "user" as const,
+            content: `I ran the tool(s) and got these results:\n\n${toolSummary}\n\nBased on these results, answer the user's original question concisely in 2-3 sentences. Cite sources when relevant. If any tool is awaiting confirmation, tell the user it is ready and ask whether they want to proceed.`,
+          },
+        ]
+
+        const followUp = await fetch("https://api.concentrate.ai/v1/chat/completions", {
+          method: "POST",
+          headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model,
+            messages: followUpMessages,
+            max_tokens: 4096,
+            temperature: 0.7,
+            stream: false,
+          }),
+          signal: AbortSignal.timeout(90_000),
+        })
+
+        if (followUp.ok) {
+          const followData: any = await followUp.json()
+          const finalReply = followData.choices?.[0]?.message?.content ?? assistantMessage.content ?? ""
+          res.json({ reply: finalReply, searched: true, tools: toolEvents })
+          return
+        }
+      }
+
+      // No tool calls — return the direct reply
+      const reply = assistantMessage?.content ?? ""
       res.json({ reply })
       return
     }
@@ -1955,7 +2750,6 @@ app.post("/api/voice/chat", async (req, res) => {
       if (!apiKey) { res.status(500).json({ error: "OpenRouter not configured" }); return }
 
       const model = modelParam || "deepseek/deepseek-chat"
-      const chatStart = Date.now()
 
       const apiMessages = nonSystemMessages.map((m: any) => ({
         role: m.role,
@@ -1965,19 +2759,22 @@ app.post("/api/voice/chat", async (req, res) => {
         apiMessages.unshift({ role: "system", content: system })
       }
 
+      const body: any = {
+        model,
+        messages: apiMessages,
+        max_tokens: 4096,
+        temperature: 0.7,
+        stream: false,
+      }
+      if (toolDefs) body.tools = toolDefs
+
       const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${apiKey}`,
         },
-        body: JSON.stringify({
-          model,
-          messages: apiMessages,
-          max_tokens: 4096,
-          temperature: 0.7,
-          stream: false,
-        }),
+        body: JSON.stringify(body),
       })
 
       if (!response.ok) {
@@ -1988,10 +2785,6 @@ app.post("/api/voice/chat", async (req, res) => {
 
       const data: any = await response.json()
       const reply = data.choices?.[0]?.message?.content ?? ""
-
-      const inputTokens = data.usage?.prompt_tokens ?? 0
-      const outputTokens = data.usage?.completion_tokens ?? 0
-
       res.json({ reply })
       return
     }

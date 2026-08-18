@@ -99,3 +99,8 @@ apps/jarvis/src-tauri/gen/
 apps/jarvis/img/
 apps/jarvis/.gitignore
 apps/jarvis/.gitignore
+
+
+supercode-openmodel/research/
+supercode-openmodel/qwen-training/
+supercode-openmodel/.venv
