@@ -28,6 +28,12 @@ import { writeFileSync, unlinkSync } from "fs"
 import { exec } from "child_process"
 import { randomUUID } from "crypto"
 import { parseStreamedContent } from "./lib/embedded-tool-calls"
+import {
+  streamOpenAICompatibleChat,
+  emitFromNonStreamingMessage,
+  writeFinish,
+  mergeKnownTools,
+} from "./lib/openai-compatible-stream"
 
 function toolParams(fn: any): object {
   const raw = fn.parameters ?? fn.inputSchema
@@ -35,6 +41,11 @@ function toolParams(fn: any): object {
     return { type: "object", properties: {} }
   }
   return raw
+}
+
+function knownToolsFromRequest(tools: any): Set<string> {
+  if (!tools || typeof tools !== "object") return mergeKnownTools()
+  return mergeKnownTools(Object.keys(tools))
 }
 
 loadEnvOnce()
@@ -376,8 +387,46 @@ app.post("/api/ai/chat", async (req, res) => {
         if (system) opts.system = system
         if (tools) { opts.tools = tools; opts.maxSteps = 5 }
         const result = streamText(opts)
-        for await (const chunk of result.textStream) {
-          res.write(JSON.stringify({ type: "text", content: chunk }) + "\n")
+        const embedded = parseStreamedContent({ knownTools: knownToolsFromRequest(tools) })
+        let emittedToolCalls = false
+        const fullStream = (result as any).fullStream
+        if (fullStream && typeof fullStream[Symbol.asyncIterator] === "function") {
+          for await (const part of fullStream) {
+            const type = part?.type
+            if (type === "text-delta" || type === "text") {
+              const raw = part.textDelta ?? part.text ?? ""
+              const blk = embedded.push(String(raw))
+              if (blk.text) res.write(JSON.stringify({ type: "text", content: blk.text }) + "\n")
+              for (const call of blk.calls) {
+                emittedToolCalls = true
+                res.write(JSON.stringify({ type: "tool-call", toolName: call.name, args: call.args, toolCallId: call.id || `call_g_${Date.now()}` }) + "\n")
+              }
+            } else if (type === "reasoning" || type === "reasoning-delta") {
+              const raw = part.textDelta ?? part.text ?? part.reasoning ?? ""
+              if (raw) res.write(JSON.stringify({ type: "reasoning", content: String(raw) }) + "\n")
+            } else if (type === "tool-call") {
+              emittedToolCalls = true
+              const name = part.toolName ?? part.name
+              const args = part.args ?? part.input ?? {}
+              const id = part.toolCallId ?? part.id ?? `call_g_${Date.now()}`
+              if (name) res.write(JSON.stringify({ type: "tool-call", toolName: name, args, toolCallId: id }) + "\n")
+            }
+          }
+        } else {
+          for await (const chunk of result.textStream) {
+            const blk = embedded.push(String(chunk))
+            if (blk.text) res.write(JSON.stringify({ type: "text", content: blk.text }) + "\n")
+            for (const call of blk.calls) {
+              emittedToolCalls = true
+              res.write(JSON.stringify({ type: "tool-call", toolName: call.name, args: call.args, toolCallId: call.id || `call_g_${Date.now()}` }) + "\n")
+            }
+          }
+        }
+        const flushed = embedded.flush()
+        if (flushed.text) res.write(JSON.stringify({ type: "text", content: flushed.text }) + "\n")
+        for (const call of flushed.calls) {
+          emittedToolCalls = true
+          res.write(JSON.stringify({ type: "tool-call", toolName: call.name, args: call.args, toolCallId: call.id || `call_g_${Date.now()}` }) + "\n")
         }
         const usage = await result.usage
         const inputTokens = usage.inputTokens ?? 0
@@ -391,7 +440,8 @@ app.post("/api/ai/chat", async (req, res) => {
           durationMs: Date.now() - googleStart,
           userId: user.id,
         })
-        res.write(JSON.stringify({ type: "finish", reason: await result.finishReason, usage }) + "\n")
+        const finishReason = emittedToolCalls ? "tool_calls" : (await result.finishReason)
+        res.write(JSON.stringify({ type: "finish", reason: finishReason, usage }) + "\n")
         res.end()
         break
       }
@@ -436,62 +486,10 @@ app.post("/api/ai/chat", async (req, res) => {
         }
         const reader = response.body?.getReader()
         if (!reader) { res.status(500).json({ error: "No response body" }); return }
-        const decoder = new TextDecoder()
-        let buffer = ""
-        let inputTokens = 0
-        let outputTokens = 0
-        let pendingToolCalls: Record<number, { id: string; name: string; args: string }> = {}
-        while (true) {
-          const { done, value } = await reader.read()
-          if (done) break
-          buffer += decoder.decode(value, { stream: true })
-          const lines = buffer.split("\n")
-          buffer = lines.pop() || ""
-          for (const line of lines) {
-            const trimmed = line.trim()
-            if (!trimmed || !trimmed.startsWith("data: ")) continue
-            const jsonStr = trimmed.slice(6)
-            if (jsonStr === "[DONE]") break
-            try {
-              const data = JSON.parse(jsonStr)
-              const delta = data.choices?.[0]?.delta
-              if (delta?.content) {
-                res.write(JSON.stringify({ type: "text", content: delta.content }) + "\n")
-              }
-              const reasoningChunk = delta?.reasoning_content || delta?.reasoning
-              if (reasoningChunk) {
-                res.write(JSON.stringify({ type: "reasoning", content: reasoningChunk }) + "\n")
-              }
-              if (delta?.tool_calls) {
-                for (const tc of delta.tool_calls) {
-                  const index = tc.index ?? 0
-                  if (!pendingToolCalls[index]) {
-                    pendingToolCalls[index] = { id: "", name: "", args: "" }
-                  }
-                  if (tc.id) pendingToolCalls[index].id = tc.id
-                  if (tc.function?.name) pendingToolCalls[index].name = tc.function.name
-                  if (tc.function?.arguments) pendingToolCalls[index].args += tc.function.arguments
-                }
-              }
-              const finishReason = data.choices?.[0]?.finish_reason
-              if (finishReason === "tool_calls") {
-                for (const [, call] of Object.entries(pendingToolCalls)) {
-                  if (call.name && call.args) {
-                    try {
-                      const parsed = JSON.parse(call.args)
-                      res.write(JSON.stringify({ type: "tool-call", toolName: call.name, args: parsed, toolCallId: call.id }) + "\n")
-                    } catch { /* skip malformed args */ }
-                  }
-                }
-                pendingToolCalls = {}
-              }
-              if (data.usage) {
-                inputTokens = data.usage.prompt_tokens ?? 0
-                outputTokens = data.usage.completion_tokens ?? 0
-              }
-            } catch { /* skip malformed */ }
-          }
-        }
+        const streamed = await streamOpenAICompatibleChat({ res, reader, knownTools: knownToolsFromRequest(tools) })
+        const inputTokens = streamed.usage.inputTokens
+        const outputTokens = streamed.usage.outputTokens
+        const emittedToolCalls = streamed.emittedToolCalls
         recordUsage({
           provider: "openrouter", model: modelName,
           inputTokens, outputTokens, cachedInputTokens: 0,
@@ -500,11 +498,7 @@ app.post("/api/ai/chat", async (req, res) => {
           durationMs: Date.now() - orStart,
           userId: user.id,
         })
-        res.write(JSON.stringify({
-          type: "finish", reason: "stop",
-          usage: { inputTokens, outputTokenDetails: { textTokens: outputTokens, reasoningTokens: 0 }, outputTokens, inputTokenDetails: { noCacheTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }, totalTokens: inputTokens + outputTokens }
-        }) + "\n")
-        res.end()
+        writeFinish(res, { emittedToolCalls, inputTokens, outputTokens })
         break
       }
       case "minimax": {
@@ -523,8 +517,48 @@ app.post("/api/ai/chat", async (req, res) => {
         if (system) opts.system = system
         if (tools) { opts.tools = tools; opts.maxSteps = 5 }
         const result = streamText(opts)
-        for await (const chunk of result.textStream) {
-          res.write(JSON.stringify({ type: "text", content: chunk }) + "\n")
+        const embedded = parseStreamedContent({ knownTools: knownToolsFromRequest(tools) })
+        let emittedToolCalls = false
+        // Prefer fullStream when available so structured tool calls + reasoning
+        // are preserved; fall back to textStream with embedded recovery.
+        const fullStream = (result as any).fullStream
+        if (fullStream && typeof fullStream[Symbol.asyncIterator] === "function") {
+          for await (const part of fullStream) {
+            const type = part?.type
+            if (type === "text-delta" || type === "text") {
+              const raw = part.textDelta ?? part.text ?? ""
+              const blk = embedded.push(String(raw))
+              if (blk.text) res.write(JSON.stringify({ type: "text", content: blk.text }) + "\n")
+              for (const call of blk.calls) {
+                emittedToolCalls = true
+                res.write(JSON.stringify({ type: "tool-call", toolName: call.name, args: call.args, toolCallId: call.id || `call_mm_${Date.now()}` }) + "\n")
+              }
+            } else if (type === "reasoning" || type === "reasoning-delta") {
+              const raw = part.textDelta ?? part.text ?? part.reasoning ?? ""
+              if (raw) res.write(JSON.stringify({ type: "reasoning", content: String(raw) }) + "\n")
+            } else if (type === "tool-call") {
+              emittedToolCalls = true
+              const name = part.toolName ?? part.name
+              const args = part.args ?? part.input ?? {}
+              const id = part.toolCallId ?? part.id ?? `call_mm_${Date.now()}`
+              if (name) res.write(JSON.stringify({ type: "tool-call", toolName: name, args, toolCallId: id }) + "\n")
+            }
+          }
+        } else {
+          for await (const chunk of result.textStream) {
+            const blk = embedded.push(String(chunk))
+            if (blk.text) res.write(JSON.stringify({ type: "text", content: blk.text }) + "\n")
+            for (const call of blk.calls) {
+              emittedToolCalls = true
+              res.write(JSON.stringify({ type: "tool-call", toolName: call.name, args: call.args, toolCallId: call.id || `call_mm_${Date.now()}` }) + "\n")
+            }
+          }
+        }
+        const flushed = embedded.flush()
+        if (flushed.text) res.write(JSON.stringify({ type: "text", content: flushed.text }) + "\n")
+        for (const call of flushed.calls) {
+          emittedToolCalls = true
+          res.write(JSON.stringify({ type: "tool-call", toolName: call.name, args: call.args, toolCallId: call.id || `call_mm_${Date.now()}` }) + "\n")
         }
         const usage = await result.usage
         const inputTokens = usage.inputTokens ?? 0
@@ -538,7 +572,8 @@ app.post("/api/ai/chat", async (req, res) => {
           durationMs: Date.now() - mmStart,
           userId: user.id,
         })
-        res.write(JSON.stringify({ type: "finish", reason: await result.finishReason, usage }) + "\n")
+        const finishReason = emittedToolCalls ? "tool_calls" : (await result.finishReason)
+        res.write(JSON.stringify({ type: "finish", reason: finishReason, usage }) + "\n")
         res.end()
         break
       }
@@ -585,62 +620,10 @@ app.post("/api/ai/chat", async (req, res) => {
         }
         const reader = response.body?.getReader()
         if (!reader) { res.status(500).json({ error: "No response body" }); return }
-        const decoder = new TextDecoder()
-        let buffer = ""
-        let inputTokens = 0
-        let outputTokens = 0
-        let pendingToolCalls: Record<number, { id: string; name: string; args: string }> = {}
-        while (true) {
-          const { done, value } = await reader.read()
-          if (done) break
-          buffer += decoder.decode(value, { stream: true })
-          const lines = buffer.split("\n")
-          buffer = lines.pop() || ""
-          for (const line of lines) {
-            const trimmed = line.trim()
-            if (!trimmed || !trimmed.startsWith("data: ")) continue
-            const jsonStr = trimmed.slice(6)
-            if (jsonStr === "[DONE]") break
-            try {
-              const data = JSON.parse(jsonStr)
-              const delta = data.choices?.[0]?.delta
-              if (delta?.content) {
-                res.write(JSON.stringify({ type: "text", content: delta.content }) + "\n")
-              }
-              const reasoningChunk = delta?.reasoning_content || delta?.reasoning
-              if (reasoningChunk) {
-                res.write(JSON.stringify({ type: "reasoning", content: reasoningChunk }) + "\n")
-              }
-              if (delta?.tool_calls) {
-                for (const tc of delta.tool_calls) {
-                  const index = tc.index ?? 0
-                  if (!pendingToolCalls[index]) {
-                    pendingToolCalls[index] = { id: "", name: "", args: "" }
-                  }
-                  if (tc.id) pendingToolCalls[index].id = tc.id
-                  if (tc.function?.name) pendingToolCalls[index].name = tc.function.name
-                  if (tc.function?.arguments) pendingToolCalls[index].args += tc.function.arguments
-                }
-              }
-              const finishReason = data.choices?.[0]?.finish_reason
-              if (finishReason === "tool_calls") {
-                for (const [, call] of Object.entries(pendingToolCalls)) {
-                  if (call.name && call.args) {
-                    try {
-                      const parsed = JSON.parse(call.args)
-                      res.write(JSON.stringify({ type: "tool-call", toolName: call.name, args: parsed, toolCallId: call.id }) + "\n")
-                    } catch { /* skip malformed args */ }
-                  }
-                }
-                pendingToolCalls = {}
-              }
-              if (data.usage) {
-                inputTokens = data.usage.prompt_tokens ?? 0
-                outputTokens = data.usage.completion_tokens ?? 0
-              }
-            } catch { /* skip malformed */ }
-          }
-        }
+        const streamed = await streamOpenAICompatibleChat({ res, reader, knownTools: knownToolsFromRequest(tools) })
+        const inputTokens = streamed.usage.inputTokens
+        const outputTokens = streamed.usage.outputTokens
+        const emittedToolCalls = streamed.emittedToolCalls
         recordUsage({
           provider: "nvidia", model: modelName,
           inputTokens, outputTokens, cachedInputTokens: 0,
@@ -649,11 +632,7 @@ app.post("/api/ai/chat", async (req, res) => {
           durationMs: Date.now() - nvidiaStart,
           userId: user.id,
         })
-        res.write(JSON.stringify({
-          type: "finish", reason: "stop",
-          usage: { inputTokens, outputTokenDetails: { textTokens: outputTokens, reasoningTokens: 0 }, outputTokens, inputTokenDetails: { noCacheTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }, totalTokens: inputTokens + outputTokens }
-        }) + "\n")
-        res.end()
+        writeFinish(res, { emittedToolCalls, inputTokens, outputTokens })
         break
       }
       case "mergedev": {
@@ -696,62 +675,10 @@ app.post("/api/ai/chat", async (req, res) => {
         }
         const reader = response.body?.getReader()
         if (!reader) { res.status(500).json({ error: "No response body" }); return }
-        const decoder = new TextDecoder()
-        let buffer = ""
-        let inputTokens = 0
-        let outputTokens = 0
-        let pendingToolCalls: Record<number, { id: string; name: string; args: string }> = {}
-        while (true) {
-          const { done, value } = await reader.read()
-          if (done) break
-          buffer += decoder.decode(value, { stream: true })
-          const lines = buffer.split("\n")
-          buffer = lines.pop() || ""
-          for (const line of lines) {
-            const trimmed = line.trim()
-            if (!trimmed || !trimmed.startsWith("data: ")) continue
-            const jsonStr = trimmed.slice(6)
-            if (jsonStr === "[DONE]") break
-            try {
-              const data = JSON.parse(jsonStr)
-              const delta = data.choices?.[0]?.delta
-              if (delta?.content) {
-                res.write(JSON.stringify({ type: "text", content: delta.content }) + "\n")
-              }
-              const reasoningChunk = delta?.reasoning_content || delta?.reasoning
-              if (reasoningChunk) {
-                res.write(JSON.stringify({ type: "reasoning", content: reasoningChunk }) + "\n")
-              }
-              if (delta?.tool_calls) {
-                for (const tc of delta.tool_calls) {
-                  const index = tc.index ?? 0
-                  if (!pendingToolCalls[index]) {
-                    pendingToolCalls[index] = { id: "", name: "", args: "" }
-                  }
-                  if (tc.id) pendingToolCalls[index].id = tc.id
-                  if (tc.function?.name) pendingToolCalls[index].name = tc.function.name
-                  if (tc.function?.arguments) pendingToolCalls[index].args += tc.function.arguments
-                }
-              }
-              const finishReason = data.choices?.[0]?.finish_reason
-              if (finishReason === "tool_calls") {
-                for (const [, call] of Object.entries(pendingToolCalls)) {
-                  if (call.name && call.args) {
-                    try {
-                      const parsed = JSON.parse(call.args)
-                      res.write(JSON.stringify({ type: "tool-call", toolName: call.name, args: parsed, toolCallId: call.id }) + "\n")
-                    } catch { /* skip malformed args */ }
-                  }
-                }
-                pendingToolCalls = {}
-              }
-              if (data.usage) {
-                inputTokens = data.usage.prompt_tokens ?? 0
-                outputTokens = data.usage.completion_tokens ?? 0
-              }
-            } catch { /* skip malformed */ }
-          }
-        }
+        const streamed = await streamOpenAICompatibleChat({ res, reader, knownTools: knownToolsFromRequest(tools) })
+        const inputTokens = streamed.usage.inputTokens
+        const outputTokens = streamed.usage.outputTokens
+        const emittedToolCalls = streamed.emittedToolCalls
         recordUsage({
           provider: "mergedev", model: modelName,
           inputTokens, outputTokens, cachedInputTokens: 0,
@@ -760,11 +687,7 @@ app.post("/api/ai/chat", async (req, res) => {
           durationMs: Date.now() - mdStart,
           userId: user.id,
         })
-        res.write(JSON.stringify({
-          type: "finish", reason: "stop",
-          usage: { inputTokens, outputTokenDetails: { textTokens: outputTokens, reasoningTokens: 0 }, outputTokens, inputTokenDetails: { noCacheTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }, totalTokens: inputTokens + outputTokens }
-        }) + "\n")
-        res.end()
+        writeFinish(res, { emittedToolCalls, inputTokens, outputTokens })
         break
       }
       case "orcarouter": {
@@ -808,62 +731,10 @@ app.post("/api/ai/chat", async (req, res) => {
         }
         const reader = response.body?.getReader()
         if (!reader) { res.status(500).json({ error: "No response body" }); return }
-        const decoder = new TextDecoder()
-        let buffer = ""
-        let inputTokens = 0
-        let outputTokens = 0
-        let pendingToolCalls: Record<number, { id: string; name: string; args: string }> = {}
-        while (true) {
-          const { done, value } = await reader.read()
-          if (done) break
-          buffer += decoder.decode(value, { stream: true })
-          const lines = buffer.split("\n")
-          buffer = lines.pop() || ""
-          for (const line of lines) {
-            const trimmed = line.trim()
-            if (!trimmed || !trimmed.startsWith("data: ")) continue
-            const jsonStr = trimmed.slice(6)
-            if (jsonStr === "[DONE]") break
-            try {
-              const data = JSON.parse(jsonStr)
-              const delta = data.choices?.[0]?.delta
-              if (delta?.content) {
-                res.write(JSON.stringify({ type: "text", content: delta.content }) + "\n")
-              }
-              const reasoningChunk = delta?.reasoning_content || delta?.reasoning
-              if (reasoningChunk) {
-                res.write(JSON.stringify({ type: "reasoning", content: reasoningChunk }) + "\n")
-              }
-              if (delta?.tool_calls) {
-                for (const tc of delta.tool_calls) {
-                  const index = tc.index ?? 0
-                  if (!pendingToolCalls[index]) {
-                    pendingToolCalls[index] = { id: "", name: "", args: "" }
-                  }
-                  if (tc.id) pendingToolCalls[index].id = tc.id
-                  if (tc.function?.name) pendingToolCalls[index].name = tc.function.name
-                  if (tc.function?.arguments) pendingToolCalls[index].args += tc.function.arguments
-                }
-              }
-              const finishReason = data.choices?.[0]?.finish_reason
-              if (finishReason === "tool_calls") {
-                for (const [, call] of Object.entries(pendingToolCalls)) {
-                  if (call.name && call.args) {
-                    try {
-                      const parsed = JSON.parse(call.args)
-                      res.write(JSON.stringify({ type: "tool-call", toolName: call.name, args: parsed, toolCallId: call.id }) + "\n")
-                    } catch { /* skip malformed args */ }
-                  }
-                }
-                pendingToolCalls = {}
-              }
-              if (data.usage) {
-                inputTokens = data.usage.prompt_tokens ?? 0
-                outputTokens = data.usage.completion_tokens ?? 0
-              }
-            } catch { /* skip malformed */ }
-          }
-        }
+        const streamed = await streamOpenAICompatibleChat({ res, reader, knownTools: knownToolsFromRequest(tools) })
+        const inputTokens = streamed.usage.inputTokens
+        const outputTokens = streamed.usage.outputTokens
+        const emittedToolCalls = streamed.emittedToolCalls
         recordUsage({
           provider: "orcarouter", model: modelName,
           inputTokens, outputTokens, cachedInputTokens: 0,
@@ -872,11 +743,7 @@ app.post("/api/ai/chat", async (req, res) => {
           durationMs: Date.now() - orStart,
           userId: user.id,
         })
-        res.write(JSON.stringify({
-          type: "finish", reason: "stop",
-          usage: { inputTokens, outputTokenDetails: { textTokens: outputTokens, reasoningTokens: 0 }, outputTokens, inputTokenDetails: { noCacheTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }, totalTokens: inputTokens + outputTokens }
-        }) + "\n")
-        res.end()
+        writeFinish(res, { emittedToolCalls, inputTokens, outputTokens })
         break
       }
       case "concentrateai": {
@@ -927,127 +794,12 @@ app.post("/api/ai/chat", async (req, res) => {
         }
         const reader = response.body?.getReader()
         if (!reader) { res.status(500).json({ error: "No response body" }); return }
-        const decoder = new TextDecoder()
-        let buffer = ""
-        let inputTokens = 0
-        let outputTokens = 0
-        let fullContent = ""
-        let reasoningContent = ""
-        let sawToolCalls = false
-        // Count events actually *emitted* to the client. A stream that starts
-        // a tool call but is cut off (or times out) before completing it would
-        // otherwise set `sawToolCalls` and suppress the non-streaming fallback,
-        // leaving the user with an empty turn.
-        let emittedToolCalls = false
-        let pendingToolCalls: Record<number, { id: string; name: string; args: string }> = {}
-        // MiniMax occasionally transports tool calls as inline TEXT inside
-        // delta.content instead of structured delta.tool_calls. Parse that
-        // shape out so it emits real tool-call events rather than leaking raw
-        // JSON/square-marker garbage into the chat.
-        const embeddedParser = parseStreamedContent()
-        try {
-          while (true) {
-            const { done, value } = await reader.read()
-            if (done) break
-            buffer += decoder.decode(value, { stream: true })
-            const lines = buffer.split("\n")
-            buffer = lines.pop() || ""
-            for (const line of lines) {
-              const trimmed = line.trim()
-              if (!trimmed || !trimmed.startsWith("data: ")) continue
-              const jsonStr = trimmed.slice(6)
-              if (jsonStr === "[DONE]") break
-              try {
-                const data = JSON.parse(jsonStr)
-                const delta = data.choices?.[0]?.delta
-                if (delta?.content) {
-                  const blk = embeddedParser.push(delta.content)
-                  if (blk.text) {
-                    fullContent += blk.text
-                    res.write(JSON.stringify({ type: "text", content: blk.text }) + "\n")
-                  }
-                  for (const call of blk.calls) {
-                    sawToolCalls = true
-                    emittedToolCalls = true
-                    res.write(JSON.stringify({ type: "tool-call", toolName: call.name, args: call.args, toolCallId: call.id }) + "\n")
-                  }
-                }
-                const reasoningChunk = delta?.reasoning_content || delta?.reasoning
-                if (reasoningChunk) {
-                  reasoningContent += reasoningChunk
-                  res.write(JSON.stringify({ type: "reasoning", content: reasoningChunk }) + "\n")
-                }
-                if (delta?.tool_calls) {
-                  sawToolCalls = true
-                  for (const tc of delta.tool_calls) {
-                    const index = tc.index ?? 0
-                    if (!pendingToolCalls[index]) {
-                      pendingToolCalls[index] = { id: "", name: "", args: "" }
-                    }
-                    if (tc.id) pendingToolCalls[index].id = tc.id
-                    if (tc.function?.name) pendingToolCalls[index].name = tc.function.name
-                    if (tc.function?.arguments) pendingToolCalls[index].args += tc.function.arguments
-                  }
-                }
-                const finishReason = data.choices?.[0]?.finish_reason
-                if (finishReason === "tool_calls") {
-                  sawToolCalls = true
-                  for (const [, call] of Object.entries(pendingToolCalls)) {
-                    if (call.name && call.args) {
-                      try {
-                        const parsed = JSON.parse(call.args)
-                        emittedToolCalls = true
-                        res.write(JSON.stringify({ type: "tool-call", toolName: call.name, args: parsed, toolCallId: call.id }) + "\n")
-                      } catch { /* skip malformed args */ }
-                    }
-                  }
-                  pendingToolCalls = {}
-                }
-                if (data.usage) {
-                  inputTokens = data.usage.prompt_tokens ?? 0
-                  outputTokens = data.usage.completion_tokens ?? 0
-                }
-              } catch { /* skip malformed */ }
-            }
-            // The stream can end with [DONE] (or EOF) without a terminating
-            // `finish_reason: "tool_calls"`. Flush any fully-formed pending
-            // tool calls in that case so they reach the client instead of
-            // turning into an empty "tools completed, no analysis" turn.
-            if (sawToolCalls && Object.keys(pendingToolCalls).length > 0) {
-              for (const [, call] of Object.entries(pendingToolCalls)) {
-                if (call.name && call.args) {
-                  try {
-                    const parsed = JSON.parse(call.args)
-                    emittedToolCalls = true
-                    res.write(JSON.stringify({ type: "tool-call", toolName: call.name, args: parsed, toolCallId: call.id }) + "\n")
-                  } catch { /* skip malformed args */ }
-                }
-              }
-              pendingToolCalls = {}
-            }
-          }
-        } catch (err: any) {
-          // Upstream hung/froze and AbortSignal.timeout fired — we treat this
-          // as "stream produced nothing", emit whatever we already have (if
-          // anything) and fall through to the non-streaming fallback below.
-          if (err?.name !== "AbortError") {
-            res.write(JSON.stringify({ type: "error", message: `Upstream failure: ${err?.message ?? String(err)}` }) + "\n")
-            break
-          }
-        }
-
-        // Release any trailing prose still buffered inside the embedded
-        // parser after the upstream stream ended.
-        const flushed = embeddedParser.flush()
-        if (flushed.text) {
-          fullContent += flushed.text
-          res.write(JSON.stringify({ type: "text", content: flushed.text }) + "\n")
-        }
-        for (const call of flushed.calls) {
-          sawToolCalls = true
-          emittedToolCalls = true
-          res.write(JSON.stringify({ type: "tool-call", toolName: call.name, args: call.args, toolCallId: call.id }) + "\n")
-        }
+        let streamed = await streamOpenAICompatibleChat({ res, reader, knownTools: knownToolsFromRequest(tools) })
+        let fullContent = streamed.fullContent
+        let reasoningContent = streamed.reasoningContent
+        let emittedToolCalls = streamed.emittedToolCalls
+        let inputTokens = streamed.usage.inputTokens
+        let outputTokens = streamed.usage.outputTokens
 
         // If streaming didn't include usage data, estimate from content.
         if (inputTokens === 0 && outputTokens === 0) {
@@ -1056,10 +808,7 @@ app.post("/api/ai/chat", async (req, res) => {
           outputTokens = Math.ceil(fullContent.length / 4)
         }
 
-        // Fallback: nothing useful streamed (no text AND no complete tool
-        // calls were emitted) — retry as a single non-streaming request.
-        // ConcentrateAI's upstream intermittently drops/freezes streaming
-        // responses; this converts a silent 60s+ blank turn into a result.
+        // Fallback: nothing useful streamed — retry as non-streaming.
         if (!fullContent.trim() && !emittedToolCalls) {
           const fbBody: any = {
             model: modelName,
@@ -1088,23 +837,16 @@ app.post("/api/ai/chat", async (req, res) => {
           if (fbRes.ok) {
             const fbData: any = await fbRes.json()
             const fbMsg = fbData?.choices?.[0]?.message ?? {}
-            const fbContent = fbMsg.content ?? fbMsg.reasoning_content ?? ""
-            if (fbContent) {
-              fullContent = fbContent
-              res.write(JSON.stringify({ type: "text", content: fbContent }) + "\n")
-            } else if (reasoningContent.trim()) {
-              fullContent = reasoningContent
-              res.write(JSON.stringify({ type: "text", content: reasoningContent }) + "\n")
-            }
+            const fb = emitFromNonStreamingMessage(res, fbMsg, reasoningContent, knownToolsFromRequest(tools))
+            if (fb.fullContent) fullContent = fb.fullContent
+            if (fb.emittedToolCalls) emittedToolCalls = true
             inputTokens = fbData?.usage?.prompt_tokens ?? 0
             outputTokens = fbData?.usage?.completion_tokens ?? 0
           }
         }
 
-        // Last resort: still nothing to surface. Mirror any reasoning (the
-        // model's "thinking") as the visible answer, or emit an explicit error
-        // so the turn is never a silent blank line that reads as "worked for
-        // 60s+ then nothing".
+        // Last resort: surface reasoning-as-text, or an explicit error so the
+        // turn is never a silent blank line.
         if (!fullContent.trim() && !emittedToolCalls) {
           if (reasoningContent.trim()) {
             fullContent = reasoningContent
@@ -1125,11 +867,7 @@ app.post("/api/ai/chat", async (req, res) => {
           durationMs: Date.now() - caStart,
           userId: user.id,
         })
-        res.write(JSON.stringify({
-          type: "finish", reason: emittedToolCalls ? "tool_calls" : "stop",
-          usage: { inputTokens, outputTokenDetails: { textTokens: outputTokens, reasoningTokens: 0 }, outputTokens, inputTokenDetails: { noCacheTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }, totalTokens: inputTokens + outputTokens }
-        }) + "\n")
-        res.end()
+        writeFinish(res, { emittedToolCalls, inputTokens, outputTokens })
         break
       }
       case "supercode": {
@@ -1179,112 +917,12 @@ app.post("/api/ai/chat", async (req, res) => {
         }
         const reader = response.body?.getReader()
         if (!reader) { res.status(500).json({ error: "No response body" }); return }
-        const decoder = new TextDecoder()
-        let buffer = ""
-        let inputTokens = 0
-        let outputTokens = 0
-        let fullContent = ""
-        let reasoningContent = ""
-        let sawToolCalls = false
-        // Count events actually *emitted* to the client so a stream cut off
-        // mid-tool-call doesn't suppress the non-streaming fallback.
-        let emittedToolCalls = false
-        let pendingToolCalls: Record<number, { id: string; name: string; args: string }> = {}
-        // Minimax sometimes relays tool calls as inline text markers inside
-        // `delta.content` instead of a structured `delta.tool_calls` array.
-        // Route content through the parser so those become real tool-call
-        // events instead of leaking raw markup into the chat.
-        const embedded = parseStreamedContent()
-        try {
-          while (true) {
-            const { done, value } = await reader.read()
-            if (done) break
-            buffer += decoder.decode(value, { stream: true })
-            const lines = buffer.split("\n")
-            buffer = lines.pop() || ""
-            for (const line of lines) {
-              const trimmed = line.trim()
-              if (!trimmed || !trimmed.startsWith("data: ")) continue
-              const jsonStr = trimmed.slice(6)
-              if (jsonStr === "[DONE]") break
-              try {
-                const data = JSON.parse(jsonStr)
-                const delta = data.choices?.[0]?.delta
-                if (delta?.content) {
-                  const chunk = embedded.push(delta.content)
-                  if (chunk.text) {
-                    fullContent += chunk.text
-                    res.write(JSON.stringify({ type: "text", content: chunk.text }) + "\n")
-                  }
-                  for (const call of chunk.calls) {
-                    sawToolCalls = true
-                    emittedToolCalls = true
-                    res.write(JSON.stringify({
-                      type: "tool-call",
-                      toolName: call.name,
-                      args: call.args,
-                      toolCallId: call.id,
-                    }) + "\n")
-                  }
-                }
-                const reasoningChunk = delta?.reasoning_content || delta?.reasoning
-                if (reasoningChunk) {
-                  reasoningContent += reasoningChunk
-                  res.write(JSON.stringify({ type: "reasoning", content: reasoningChunk }) + "\n")
-                }
-                if (delta?.tool_calls) {
-                  sawToolCalls = true
-                  for (const tc of delta.tool_calls) {
-                    const index = tc.index ?? 0
-                    if (!pendingToolCalls[index]) {
-                      pendingToolCalls[index] = { id: "", name: "", args: "" }
-                    }
-                    if (tc.id) pendingToolCalls[index].id = tc.id
-                    if (tc.function?.name) pendingToolCalls[index].name = tc.function.name
-                    if (tc.function?.arguments) pendingToolCalls[index].args += tc.function.arguments
-                  }
-                }
-                const finishReason = data.choices?.[0]?.finish_reason
-                if (finishReason === "tool_calls") {
-                  sawToolCalls = true
-                  for (const [, call] of Object.entries(pendingToolCalls)) {
-                    if (call.name && call.args) {
-                      try {
-                        const parsed = JSON.parse(call.args)
-                        emittedToolCalls = true
-                        res.write(JSON.stringify({ type: "tool-call", toolName: call.name, args: parsed, toolCallId: call.id }) + "\n")
-                      } catch { /* skip malformed args */ }
-                    }
-                  }
-                  pendingToolCalls = {}
-                }
-                if (data.usage) {
-                  inputTokens = data.usage.prompt_tokens ?? 0
-                  outputTokens = data.usage.completion_tokens ?? 0
-                }
-              } catch { /* skip malformed */ }
-            }
-            // Stream can end with [DONE] (or EOF) without a terminating
-            // `finish_reason: "tool_calls"` — flush fully-formed pending calls.
-            if (sawToolCalls && Object.keys(pendingToolCalls).length > 0) {
-              for (const [, call] of Object.entries(pendingToolCalls)) {
-                if (call.name && call.args) {
-                  try {
-                    const parsed = JSON.parse(call.args)
-                    emittedToolCalls = true
-                    res.write(JSON.stringify({ type: "tool-call", toolName: call.name, args: parsed, toolCallId: call.id }) + "\n")
-                  } catch { /* skip malformed args */ }
-                }
-              }
-              pendingToolCalls = {}
-            }
-          }
-        } catch (err: any) {
-          if (err?.name !== "AbortError") {
-            res.write(JSON.stringify({ type: "error", message: `Upstream failure: ${err?.message ?? String(err)}` }) + "\n")
-            break
-          }
-        }
+        let streamed = await streamOpenAICompatibleChat({ res, reader, knownTools: knownToolsFromRequest(tools) })
+        let fullContent = streamed.fullContent
+        let reasoningContent = streamed.reasoningContent
+        let emittedToolCalls = streamed.emittedToolCalls
+        let inputTokens = streamed.usage.inputTokens
+        let outputTokens = streamed.usage.outputTokens
 
         // If streaming didn't include usage data, estimate from content.
         if (inputTokens === 0 && outputTokens === 0) {
@@ -1322,14 +960,9 @@ app.post("/api/ai/chat", async (req, res) => {
           if (fbRes.ok) {
             const fbData: any = await fbRes.json()
             const fbMsg = fbData?.choices?.[0]?.message ?? {}
-            const fbContent = fbMsg.content ?? fbMsg.reasoning_content ?? ""
-            if (fbContent) {
-              fullContent = fbContent
-              res.write(JSON.stringify({ type: "text", content: fbContent }) + "\n")
-            } else if (reasoningContent.trim()) {
-              fullContent = reasoningContent
-              res.write(JSON.stringify({ type: "text", content: reasoningContent }) + "\n")
-            }
+            const fb = emitFromNonStreamingMessage(res, fbMsg, reasoningContent, knownToolsFromRequest(tools))
+            if (fb.fullContent) fullContent = fb.fullContent
+            if (fb.emittedToolCalls) emittedToolCalls = true
             inputTokens = fbData?.usage?.prompt_tokens ?? 0
             outputTokens = fbData?.usage?.completion_tokens ?? 0
           }
@@ -1349,14 +982,6 @@ app.post("/api/ai/chat", async (req, res) => {
           }
         }
 
-        // Release any trailing prose still held by the embedded-tool-call
-        // parser (narration emitted after the final marker).
-        const flushed = embedded.flush()
-        if (flushed.text) {
-          fullContent += flushed.text
-          res.write(JSON.stringify({ type: "text", content: flushed.text }) + "\n")
-        }
-
         recordUsage({
           provider: "supercode", model: modelName,
           inputTokens, outputTokens, cachedInputTokens: 0,
@@ -1365,11 +990,7 @@ app.post("/api/ai/chat", async (req, res) => {
           durationMs: Date.now() - scStart,
           userId: user.id,
         })
-        res.write(JSON.stringify({
-          type: "finish", reason: emittedToolCalls ? "tool_calls" : "stop",
-          usage: { inputTokens, outputTokenDetails: { textTokens: outputTokens, reasoningTokens: 0 }, outputTokens, inputTokenDetails: { noCacheTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }, totalTokens: inputTokens + outputTokens }
-        }) + "\n")
-        res.end()
+        writeFinish(res, { emittedToolCalls, inputTokens, outputTokens })
         break
       }
       default: {
@@ -2115,6 +1736,46 @@ app.post("/api/voice/chat", async (req, res) => {
     console.log(
       `[voice/chat] screenImage=${hasScreenImage ? `yes (${(screenImage.length / 1024).toFixed(0)}KB)` : "no"} screenSelection=${hasScreenSelection ? "yes" : "no"} model=${modelParam ?? "auto"} provider=${provider}`,
     )
+
+    // --- DEBUG probe: dump the attached screenshot for offline inspection ---
+    if (hasScreenImage) {
+      try {
+        const b64 = screenImage.replace(/^data:image\/[a-z0-9+.-]+;base64,/, "")
+        const buf = Buffer.from(b64, "base64")
+        const jpegDims = (b: Buffer): string => {
+          try {
+            let off = 2
+            while (off + 9 < b.length) {
+              if (b[off] !== 0xff) { off++; continue }
+              const marker = b[off + 1]
+              if (marker === undefined) break
+              if (marker === 0xd8 || (marker >= 0xd0 && marker <= 0xd7)) { off += 2; continue }
+              const len = b.readUInt16BE(off + 2)
+              if (
+                (marker >= 0xc0 && marker <= 0xc3) ||
+                (marker >= 0xc5 && marker <= 0xc7) ||
+                (marker >= 0xc9 && marker <= 0xcb) ||
+                (marker >= 0xcd && marker <= 0xcf)
+              ) {
+                return `${b.readUInt16BE(off + 5)}x${b.readUInt16BE(off + 7)}`
+              }
+              off += 2 + len
+            }
+            return "no-sof"
+          } catch {
+            return "parse-error"
+          }
+        }
+        const dest = `/tmp/voice_screen_dump_${Date.now()}.jpg`
+        require("fs").writeFileSync(dest, buf)
+        console.log(
+          `[voice/chat] DEBUG attached image: ${buf.length} bytes raw, dims ${jpegDims(buf)}, saved ${dest}`,
+        )
+      } catch (e) {
+        console.log(`[voice/chat] DEBUG image parse failed: ${e}`)
+      }
+    }
+
     const screenDirective = hasScreenImage
       ? "The user attached a screenshot of their current screen. You can see exactly " +
         "what is on their screen (apps, windows, text, UI elements). When the user asks " +

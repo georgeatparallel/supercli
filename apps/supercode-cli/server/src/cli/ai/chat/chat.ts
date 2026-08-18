@@ -1848,15 +1848,35 @@ function keyToPermissionReply(
 // raw tool call XML.
 function stripToolCallXml(chunk: string): string {
   if (!chunk) return ""
-  if (!chunk.includes("<|tool_") && !chunk.includes("<tool_")) return chunk
+  // MiniMax control tokens + Kimi/tool XML leak into the text stream.
+  // Drop them so the TUI never shows raw markup like `]<]minimax[>[<tool_call>`.
+  let out = chunk
+  if (
+    out.includes("<|") ||
+    out.includes("<tool_") ||
+    out.includes("<invoke") ||
+    out.includes("]<]") ||
+    out.includes("[<tool_call") ||
+    /\{\s*"(?:tool|name)"\s*:/.test(out)
+  ) {
+    out = out
+      .replace(/\]\s*<\s*\]\s*minimax\s*\[\s*>\s*(?:\[\s*<\s*tool_call\s*>)?/gi, "")
+      .replace(/\[\s*<\s*tool_call\s*>/gi, "")
+      .replace(/<\|\s*[^|>]+\s*\|>/g, "")
+      .replace(/<\/?tool_call[^>]*>/gi, "")
+      // Drop MiniMax <invoke> blocks (both <parameter> and <command>/<description> shapes).
+      .replace(/<invoke\b[^>]*>[\s\S]*?<\/invoke>/gi, "")
+      .replace(/<\/?invoke\b[^>]*>/gi, "")
+      .replace(/<\/?(?:command|description|parameter|arguments?)\b[^>]*>/gi, "")
+      // Drop bare MiniMax-style tool descriptors that slipped past the proxy.
+      .replace(/\{\s*"(?:tool|name)"\s*:\s*"[^"]+"[\s\S]*?\}/g, "")
+  }
   // If the entire chunk is (or contains) a tool call section block, drop it.
   // This handles the Kimi K2-6 pattern:
   //   <|tool_calls_section_begin|><|tool_call_begin|>functions.read_file:0<|tool_call_argument_begin|>...
   if (/<\|tool_calls_section_begin\|>/.test(chunk)) return ""
-  // If the chunk has individual tool call tags but no text beyond them, drop it.
-  const stripped = chunk.replace(/<\|[^|]+\|>/g, "").replace(/<function>[^<]*<\/function>/g, "").trim()
+  const stripped = out.replace(/<function>[^<]*<\/function>/g, "").trim()
   if (!stripped) return ""
-  // Some remaining text — only strip the tags, keep any actual content.
   return stripped
 }
 
