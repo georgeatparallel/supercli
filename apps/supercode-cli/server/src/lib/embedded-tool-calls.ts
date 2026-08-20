@@ -50,6 +50,7 @@ export interface ParsedBlock {
 const SQUARE_CLOSE = /\[\/TOOL_CALL\]|\[\/tool_call\]/g
 const XML_CLOSE = /<\/tool_call>/g
 const INVOKE_CLOSE = /<\/invoke>/g
+const LOOSE_INVOKE_CLOSE = /<\/invoke>|\/invoke>/g
 
 // Known supercode tool names. The bare-JSON descriptor shape is only accepted
 // when `name`/`tool` matches one of these, so prose that happens to contain a JSON
@@ -93,7 +94,10 @@ const CONTROL_TOKEN_RE =
  */
 export function stripControlTokens(text: string): string {
   if (!text) return ""
-  return text.replace(CONTROL_TOKEN_RE, "").replace(/\[<\s*tool_call\s*>/gi, "")
+  return text
+    .replace(CONTROL_TOKEN_RE, "")
+    .replace(/\[<\s*tool_call\s*>/gi, "")
+    .replace(/\/(?:tool_call|invoke)\s*>/gi, "")
 }
 
 /**
@@ -143,12 +147,13 @@ export function parseStreamedContent(opts?: { knownTools?: Set<string> }): {
     while (i < block.length) {
       // Find the next opener (square, xml, bare invoke, bare JSON descriptor, or control token).
       let nextOpen = -1
-      let openKind: "square" | "xml" | "invoke" | "json" | "control" = "square"
+      let openKind: "square" | "xml" | "invoke" | "loose-invoke" | "json" | "control" = "square"
       const squareAt = block.indexOf("[TOOL_CALL]", i)
       const squareAtLow = block.indexOf("[tool_call]", i)
       const xmlAt = block.indexOf("<tool_call>", i)
       const xmlAtAlt = block.indexOf("<tool_call", i)
       const invokeAt = block.indexOf("<invoke", i)
+      const looseInvokeAt = findLooseInvokeStart(block, i)
       const jsonAt = findJsonDescriptorStart(block, i)
       const controlAt = findControlTokenStart(block, i)
 
@@ -176,6 +181,10 @@ export function parseStreamedContent(opts?: { knownTools?: Set<string> }): {
       ) {
         nextOpen = invokeAt
         openKind = "invoke"
+      }
+      if (looseInvokeAt !== -1 && (nextOpen === -1 || looseInvokeAt < nextOpen)) {
+        nextOpen = looseInvokeAt
+        openKind = "loose-invoke"
       }
       if (jsonAt !== -1 && (nextOpen === -1 || jsonAt < nextOpen)) {
         nextOpen = jsonAt
@@ -205,7 +214,7 @@ export function parseStreamedContent(opts?: { knownTools?: Set<string> }): {
       if (before.length > 0) {
         if (
           /^\s*$/.test(before) &&
-          (openKind === "json" || openKind === "xml" || openKind === "invoke" || openKind === "control")
+          (openKind === "json" || openKind === "xml" || openKind === "invoke" || openKind === "loose-invoke" || openKind === "control")
         ) {
           // drop
         } else {
@@ -253,10 +262,12 @@ export function parseStreamedContent(opts?: { knownTools?: Set<string> }): {
           ? /^\[tool_call\]/i.test(tail)
             ? "[tool_call]".length
             : "[TOOL_CALL]".length
-          : openKind === "invoke"
+          : openKind === "invoke" || openKind === "loose-invoke"
             ? (() => {
-                const m = /^<invoke\b[^>]*>/i.exec(tail)
-                return m ? m[0].length : "<invoke>".length
+                const m = openKind === "invoke"
+                  ? /^<invoke\b[^>]*>/i.exec(tail)
+                  : /^invoke\b[^>]*>/i.exec(tail)
+                return m ? m[0].length : openKind === "invoke" ? "<invoke>".length : "invoke>".length
               })()
             : /^<tool_call>/i.test(tail)
               ? "<tool_call>".length
@@ -265,7 +276,14 @@ export function parseStreamedContent(opts?: { knownTools?: Set<string> }): {
                   return m ? m[0].length : "<tool_call>".length
                 })()
       const innerStart = opLen
-      const closeRe = openKind === "square" ? SQUARE_CLOSE : openKind === "invoke" ? INVOKE_CLOSE : XML_CLOSE
+      const closeRe =
+        openKind === "square"
+          ? SQUARE_CLOSE
+          : openKind === "invoke"
+            ? INVOKE_CLOSE
+            : openKind === "loose-invoke"
+              ? LOOSE_INVOKE_CLOSE
+              : XML_CLOSE
       closeRe.lastIndex = 0
       const closeMatch = closeRe.exec(tail)
       if (!closeMatch) {
@@ -281,6 +299,8 @@ export function parseStreamedContent(opts?: { knownTools?: Set<string> }): {
       calls.push(
         ...(openKind === "invoke"
           ? parseBlock(tail.slice(0, closeMatch.index + closeMatch[0].length), "invoke")
+          : openKind === "loose-invoke"
+            ? parseLooseInvokeBlock(tail.slice(0, closeMatch.index + closeMatch[0].length), knownTools)
           : parseBlock(inner, openKind)),
       )
       i = nextOpen + closeMatch.index + closeMatch[0].length
@@ -332,6 +352,7 @@ export function parseStreamedContent(opts?: { knownTools?: Set<string> }): {
         /\[tool_call/i.test(cleaned) ||
         /<tool_call/i.test(cleaned) ||
         /<invoke\b/i.test(cleaned) ||
+        /\binvoke\s+name\s*=/i.test(cleaned) ||
         /^\s*\{\s*"(?:name|tool)"\s*:/.test(cleaned) ||
         /\]\s*<\s*\]/.test(cleaned) ||
         /<\|\s*[^|>]*$/.test(cleaned)
@@ -398,6 +419,40 @@ function parseXmlBlock(inner: string): EmbeddedToolCall | null {
   return { name, args, id: "" }
 }
 
+/**
+ * Degraded MiniMax paste/render shape where the leading `<` characters have
+ * already been stripped before the safety parser sees the text:
+ *   invoke name="run_command">command>git status/command>/invoke>
+ */
+function parseLooseInvokeBlock(inner: string, knownTools: Set<string>): EmbeddedToolCall[] {
+  const nameMatch = /\binvoke\s+name\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s>]+))/i.exec(inner)
+  if (!nameMatch) return []
+  const name = (nameMatch[1] ?? nameMatch[2] ?? nameMatch[3]) ?? ""
+  if (!knownTools.has(name)) return []
+
+  const args: Record<string, unknown> = {}
+  const paramRe =
+    /(?:^|[<>\s])parameter\s+name\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s>]+))\s*[^>]*>([\s\S]*?)(?:<\/parameter>|\/parameter>)/gi
+  let m: RegExpExecArray | null
+  while ((m = paramRe.exec(inner))) {
+    const pname = m[1] ?? m[2] ?? m[3] ?? ""
+    const value = m[4] ?? ""
+    if (pname) args[pname] = decodeEntities(value.trim())
+  }
+
+  const commandMatch = /(?:^|[<>\s])command\b[^>]*>([\s\S]*?)(?:<\/command>|\/command>)/i.exec(inner)
+  if (commandMatch && commandMatch[1]?.trim()) {
+    args.command = decodeEntities(commandMatch[1].trim())
+  }
+  const descMatch = /(?:^|[<>\s])description\b[^>]*>([\s\S]*?)(?:<\/description>|\/description>)/i.exec(inner)
+  if (descMatch && descMatch[1]?.trim()) {
+    args.description = decodeEntities(descMatch[1].trim())
+  }
+
+  if (Object.keys(args).length === 0) return []
+  return [{ name, args, id: "" }]
+}
+
 /** Square shape: `run_command --command="git diff --staged"` */
 function parseSquareBlock(inner: string): EmbeddedToolCall[] {
   const nameMatch = /^\s*([A-Za-z_][A-Za-z0-9_]*)/.exec(inner)
@@ -445,6 +500,17 @@ function findJsonDescriptorStart(s: string, from: number): number {
   return m ? m.index : -1
 }
 
+function findLooseInvokeStart(s: string, from: number): number {
+  const re = /\binvoke\s+name\s*=/gi
+  re.lastIndex = from
+  while (true) {
+    const m = re.exec(s)
+    if (!m) return -1
+    const prev = m.index > 0 ? s[m.index - 1] : ""
+    if (prev !== "<") return m.index
+  }
+}
+
 function findControlTokenStart(s: string, from: number): number {
   // Fast paths for the known MiniMax leak patterns.
   const candidates = [
@@ -455,6 +521,8 @@ function findControlTokenStart(s: string, from: number): number {
     // Stray close tags whose opener was consumed as part of a control token.
     s.indexOf("</tool_call>", from),
     s.indexOf("</invoke>", from),
+    s.indexOf("/tool_call>", from),
+    s.indexOf("/invoke>", from),
   ].filter((n) => n !== -1)
   if (candidates.length === 0) return -1
   return Math.min(...candidates)
@@ -472,7 +540,7 @@ function consumeControlToken(s: string): number {
 
   // Stray close tag whose opener was already consumed by a control token.
   // Drop the tag (and any trailing `]` framing) silently.
-  const strayClose = /^<\/(?:tool_call|invoke)\s*>\s*\]?/i.exec(s)
+  const strayClose = /^(?:<\/(?:tool_call|invoke)\s*>|\/(?:tool_call|invoke)\s*>)\s*\]?/i.exec(s)
   if (strayClose) return strayClose[0].length
 
   // `<|...|>` special tokens
@@ -510,6 +578,8 @@ function holdPartialOpener(tail: string): { emit: string; hold: string } {
     /\[(?:T(?:O(?:O(?:L(?:_(?:C(?:A(?:L(?:L)?)?)?)?)?)?)?)?)?$/i,
     /<(?:t(?:o(?:o(?:l(?:_(?:c(?:a(?:l(?:l)?)?)?)?)?)?)?)?)?$/i,
     /<(?:i(?:n(?:v(?:o(?:k(?:e)?)?)?)?)?)?$/i,
+    /\b(?:i|in|inv|invo|invok|invoke)(?:\s+(?:n|na|nam|name)(?:\s*=\s*(?:"[^"]*)?)?)?$/i,
+    /\binvoke\s+name\s*=\s*(?:"[^"]*)?$/i,
     /\{\s*"(?:n(?:a(?:m(?:e)?)?)?|t(?:o(?:o(?:l)?)?)?)?"?\s*:?\s*$/,
     /\](?:<(?:\](?:m(?:i(?:n(?:i(?:m(?:a(?:x)?)?)?)?)?)?)?)?)?$/i,
     /<\|\s*[^|>]*$/,

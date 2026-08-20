@@ -80,6 +80,42 @@ test("minimax <invoke> with <command>/<description> tags (live leak repro)", () 
   expect(out.text).toBe("")
 })
 
+test("degraded minimax invoke fragment is recovered", () => {
+  const out = drain(
+    parseStreamedContent(),
+    [
+      'invoke name="run_command">command>git diff --cached cortex-sdk.md/command>description>Show staged diff for cortex-sdk.md/description>/invoke>\n/tool_call>',
+    ],
+  )
+  expect(out.calls.length).toBe(1)
+  expect(out.calls[0]).toEqual({
+    name: "run_command",
+    args: {
+      command: "git diff --cached cortex-sdk.md",
+      description: "Show staged diff for cortex-sdk.md",
+    },
+    id: "",
+  })
+  expect(out.text).toBe("")
+})
+
+test("degraded minimax invoke fragment split across chunks is held", () => {
+  const out = drain(
+    parseStreamedContent(),
+    [
+      'invoke name="run_command">command>git ',
+      "diff --cached --stat/command>description>Show stat/description>",
+      "/invoke>\n/tool_call>",
+    ],
+  )
+  expect(out.calls.length).toBe(1)
+  expect(out.calls[0].args).toEqual({
+    command: "git diff --cached --stat",
+    description: "Show stat",
+  })
+  expect(out.text).toBe("")
+})
+
 test("bare <invoke> without <tool_call> wrapper is recovered", () => {
   const out = drain(
     parseStreamedContent(),

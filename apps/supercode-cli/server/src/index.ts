@@ -34,6 +34,7 @@ import {
   writeFinish,
   mergeKnownTools,
 } from "./lib/openai-compatible-stream"
+import { stripOrphanToolCalls } from "./cli/ai/sanitize-messages"
 
 function toolParams(fn: any): object {
   const raw = fn.parameters ?? fn.inputSchema
@@ -350,11 +351,20 @@ app.post("/api/ai/chat", async (req, res) => {
       return
     }
 
-    const { messages, provider, model: modelParam, tools } = req.body
-    if (!messages || !Array.isArray(messages)) {
+    const { messages: rawMessages, provider, model: modelParam, tools } = req.body
+    if (!rawMessages || !Array.isArray(rawMessages)) {
       res.status(400).json({ error: "Messages array is required" })
       return
     }
+
+    // Drop orphan tool_calls before forwarding to upstream. Any assistant
+    // message whose `tool_calls` entries lack a matching `tool` role message
+    // makes ConcentrateAI (and several other OpenAI-compatible providers)
+    // 400 with `function_call ... is missing a corresponding
+    // function_call_output`. Both the client CLI and any prior turn of this
+    // server may have left an orphan in the posted history; strip them here
+    // so we never propagate them to the upstream provider.
+    const messages = stripOrphanToolCalls(rawMessages as any)
 
     // Paid-tier enforcement: subscription → model access → request cap → credits
     const gate = await checkPlanGate(user.id, modelParam ?? "deepseek-v4-flash")

@@ -5,6 +5,7 @@ import { isEmptyToolResult, isDeniedToolResult, summarizeToolResult } from "./to
 import { appendProxyUsage } from "src/lib/token-budget"
 import { parseStreamedContent, KNOWN_TOOL_NAMES } from "src/lib/embedded-tool-calls"
 import prisma from "src/lib/prisma"
+import { stripOrphanToolCalls } from "./sanitize-messages"
 
 const BASE_URL = process.env.SUPERCODE_SERVER_URL || "https://supercode-8w7e.onrender.com"
 
@@ -271,7 +272,21 @@ export class ServerProxyService {
     onToolResult?: (params: { toolName: string; args: unknown; result: string }) => void,
     onStepFinish?: (params: { stepNumber: number; toolCalls: Array<{ toolName: string; args: unknown }>; toolResults: Array<{ toolName: string; args: unknown; result: string }> }) => void,
   ) {
-    let currentMessages = [...messages]
+    // Strip orphan tool_calls from history before forwarding to the upstream
+    // model. An assistant message with `tool_calls` but no following `tool`
+    // message with the matching `tool_call_id` causes ConcentrateAI (and most
+    // OpenAI-compatible providers) to 400 with "function_call ... missing
+    // function_call_output". This can happen when:
+    //   - a prior turn streamed tool-call events but errored/closed before
+    //     the matching tool result was emitted,
+    //   - the chat UI dropped/stripped tool messages during compaction or
+    //     history replay (formatMessagesForAI flattens them to prose), or
+    //   - the client re-fetched a stale conversation snapshot mid-turn.
+    //
+    // We never strip a tool_calls entry whose paired tool message is missing
+    // from THIS same forwarding call — we only drop orphans (any tool_call_id
+    // that isn't echoed by a subsequent `tool` message in the same array).
+    let currentMessages: ModelMessage[] = stripOrphanToolCalls(messages as ModelMessage[])
     let accumulatedContent = ""
     let finishReason: FinishReason = "stop"
     let usage: LanguageModelUsage = {

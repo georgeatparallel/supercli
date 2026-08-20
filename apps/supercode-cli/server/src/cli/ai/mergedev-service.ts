@@ -5,6 +5,7 @@ import { mergedevConfig } from "../../config/mergedev.config.ts"
 import { recordUsage } from "../../lib/track-usage"
 import { computeCost } from "../../lib/pricing"
 import { executeToolLoop } from "./tool-executor.ts"
+import { stripOrphanToolCalls } from "./sanitize-messages"
 
 const HIGH_VALUE_MODELS = ["anthropic/claude-fable-5", "anthropic/claude-opus-5", "anthropic/claude-opus-4-8", "anthropic/claude-opus-4-7", "openai/gpt-5.5"]
 
@@ -48,8 +49,10 @@ export class MergeDevService {
     signalHandler && signal!.addEventListener("abort", signalHandler, { once: true })
 
     try {
-      const systemMessages = messages.filter(m => m.role === "system")
-      const nonSystemMessages = messages.filter(m => m.role !== "system")
+      // Drop orphan tool_calls — see sanitize-messages.ts.
+      const sanitized = stripOrphanToolCalls(messages)
+      const systemMessages = sanitized.filter(m => m.role === "system")
+      const nonSystemMessages = sanitized.filter(m => m.role !== "system")
       const system = systemMessages.map(m => m.content).join("\n")
 
       const hasTools = tools && Object.keys(tools).length > 0
