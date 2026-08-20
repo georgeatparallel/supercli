@@ -5,6 +5,7 @@ import chalk from "chalk";
 import { recordUsage } from "../../lib/track-usage"
 import { computeCost } from "../../lib/pricing"
 import { isEmptyToolResult, isDeniedToolResult, summarizeToolResult, tcName } from "./tool-result";
+import { stripOrphanToolCalls } from "./sanitize-messages";
 
 export class AIService {
   model: ReturnType<ReturnType<typeof createGoogleGenerativeAI>>
@@ -55,8 +56,10 @@ export class AIService {
     onStepFinish?: (params: { stepNumber: number; toolCalls: Array<{ toolName: string; args: unknown }>; toolResults: Array<{ toolName: string; args: unknown; result: string }> }) => void,
   ) {
     try {
-      const systemMessages = messages.filter(m => m.role === "system")
-      const nonSystemMessages = messages.filter(m => m.role !== "system")
+      // Drop orphan tool_calls — see sanitize-messages.ts.
+      const sanitized = stripOrphanToolCalls(messages)
+      const systemMessages = sanitized.filter(m => m.role === "system")
+      const nonSystemMessages = sanitized.filter(m => m.role !== "system")
       const system = systemMessages.map(m => m.content).join("\n")
       const onStepFinishRef = onStepFinish
 

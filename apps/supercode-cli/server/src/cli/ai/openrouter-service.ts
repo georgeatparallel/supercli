@@ -5,6 +5,7 @@ import { recordUsage } from "../../lib/track-usage"
 import { computeCost } from "../../lib/pricing"
 import { isEmptyToolResult, isDeniedToolResult, summarizeToolResult } from "./tool-result"
 import { parseStreamedContent, KNOWN_TOOL_NAMES } from "src/lib/embedded-tool-calls"
+import { stripOrphanToolCalls } from "./sanitize-messages"
 
 const MODEL_MAX_TOKENS: Record<string, number> = {
   "moonshotai/kimi-k2.6": 256,
@@ -241,7 +242,8 @@ export class OpenRouterService {
     onToolResult?: (params: { toolName: string; args: unknown; result: string }) => void,
     onStepFinish?: (params: { stepNumber: number; toolCalls: Array<{ toolName: string; args: unknown }>; toolResults: Array<{ toolName: string; args: unknown; result: string }> }) => void,
   ) {
-    let currentMessages = [...messages]
+    // Drop orphan tool_calls before forwarding — see sanitize-messages.ts.
+    let currentMessages: any[] = stripOrphanToolCalls(messages as any)
     let accumulatedContent = ""
     let finishReason: FinishReason = "stop"
     let usage: LanguageModelUsage = {

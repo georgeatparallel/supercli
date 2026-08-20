@@ -216,9 +216,12 @@ function captureToolSnapshot(toolName: string, args: unknown, resultRaw: string)
         }
       })()
       if (parsed && typeof parsed === "object") {
-        const stdout = typeof (parsed as any).stdout === "string" ? (parsed as any).stdout : ""
-        const stderr = typeof (parsed as any).stderr === "string" ? (parsed as any).stderr : ""
-        const exitCode = typeof (parsed as any).exitCode === "number" ? (parsed as any).exitCode : 0
+        const result = (parsed as any).success === true && (parsed as any).data && typeof (parsed as any).data === "object"
+          ? (parsed as any).data
+          : parsed
+        const stdout = typeof (result as any).stdout === "string" ? (result as any).stdout : ""
+        const stderr = typeof (result as any).stderr === "string" ? (result as any).stderr : ""
+        const exitCode = typeof (result as any).exitCode === "number" ? (result as any).exitCode : 0
         return renderCommandSnapshot(a.command ?? "", stdout, stderr, exitCode)
       }
       return []
@@ -1855,8 +1858,10 @@ function stripToolCallXml(chunk: string): string {
     out.includes("<|") ||
     out.includes("<tool_") ||
     out.includes("<invoke") ||
+    /\binvoke\s+name\s*=/.test(out) ||
     out.includes("]<]") ||
     out.includes("[<tool_call") ||
+    out.includes("/tool_call>") ||
     /\{\s*"(?:tool|name)"\s*:/.test(out)
   ) {
     out = out
@@ -1866,8 +1871,10 @@ function stripToolCallXml(chunk: string): string {
       .replace(/<\/?tool_call[^>]*>/gi, "")
       // Drop MiniMax <invoke> blocks (both <parameter> and <command>/<description> shapes).
       .replace(/<invoke\b[^>]*>[\s\S]*?<\/invoke>/gi, "")
+      .replace(/\binvoke\s+name\s*=\s*(?:"[^"]+"|'[^']+'|[^\s>]+)[\s\S]*?(?:<\/invoke>|\/invoke>)/gi, "")
       .replace(/<\/?invoke\b[^>]*>/gi, "")
       .replace(/<\/?(?:command|description|parameter|arguments?)\b[^>]*>/gi, "")
+      .replace(/\/(?:tool_call|invoke)\s*>/gi, "")
       // Drop bare MiniMax-style tool descriptors that slipped past the proxy.
       .replace(/\{\s*"(?:tool|name)"\s*:\s*"[^"]+"[\s\S]*?\}/g, "")
   }

@@ -5,6 +5,7 @@ import { recordUsage } from "../../lib/track-usage"
 import { computeCost } from "../../lib/pricing"
 import { isEmptyToolResult, isDeniedToolResult, summarizeToolResult, tcName } from "./tool-result"
 import { checkDailyOpusLimit, incrementDailyOpusCount } from "../../lib/token-budget"
+import { stripOrphanToolCalls } from "./sanitize-messages"
 
 const HIGH_VALUE_MODELS = ["anthropic/claude-fable-5", "anthropic/claude-opus-5", "anthropic/claude-opus-4-8", "anthropic/claude-opus-4-7", "openai/gpt-5.5"]
 const OPUS_MODELS = ["anthropic/claude-opus-5", "anthropic/claude-opus-4-8", "anthropic/claude-opus-4-7"]
@@ -115,8 +116,16 @@ export class ConcentrateService {
     signalHandler && signal!.addEventListener("abort", signalHandler, { once: true })
 
     try {
-      const systemMessages = messages.filter(m => m.role === "system")
-      const nonSystemMessages = messages.filter(m => m.role !== "system")
+      // Drop orphan tool_calls before forwarding to Vercel AI SDK.
+      // ConcentrateAI's upstream 400s with `function_call ... missing
+      // function_call_output` when an assistant message carries
+      // `tool_calls` without a matching `role: "tool"` message further
+      // down. The chat loop is supposed to keep them paired, but a
+      // prior turn that aborted mid-tool or a stale history snapshot
+      // can drop the tool message. See sanitize-messages.ts.
+      const sanitized = stripOrphanToolCalls(messages)
+      const systemMessages = sanitized.filter(m => m.role === "system")
+      const nonSystemMessages = sanitized.filter(m => m.role !== "system")
       const system = systemMessages.map(m => m.content).join("\n")
       if (OPUS_MODELS.includes(this.modelName)) {
         await checkDailyOpusLimit()
