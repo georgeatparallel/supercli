@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState, useCallback } from "react"
 import Link from "next/link"
+import { usePathname } from "next/navigation"
 import BetaCountdownBanner from "./beta-countdown-banner"
 import { Button } from "../ui/button"
 
@@ -140,6 +141,8 @@ const PixelLogo = () => (
 const Navbar = () => {
   const [menuOpen, setMenuOpen] = useState(false)
   const [bannerVisible, setBannerVisible] = useState(false)
+  const pathname = usePathname()
+  const hideBanner = pathname === "/code-review"
 
   const handleBannerChange = useCallback((visible: boolean) => {
     setBannerVisible(visible)
@@ -168,7 +171,7 @@ const Navbar = () => {
 
   return (
     <>
-    <header className="fixed top-[36px] sm:top-[40px] left-0 right-0 z-[100]">
+    <header className={`fixed left-0 right-0 z-[100] ${hideBanner ? "top-0" : "top-[36px] sm:top-[40px]"}`}>
       <BetaCountdownBanner onVisibilityChange={handleBannerChange} />
       <div className={`bg-background/95 backdrop-blur-sm transition-[background,backdrop-filter,border] duration-300 ease-[cubic-bezier(0.23,1,0.32,1)] ${bannerVisible ? "border-t-0" : ""}`}>
         <div className="relative h-[70px] flex items-center px-5 md:px-12 max-w-[1400px] mx-auto w-full">
@@ -255,7 +258,9 @@ const Navbar = () => {
 
       <div
         className={`fixed inset-0 z-40 transition-[opacity] duration-[400ms] ease-[cubic-bezier(0.23,1,0.32,1)] ${
-          bannerVisible ? "top-[150px] sm:top-[150px]" : "top-[106px] sm:top-[110px]"
+          hideBanner
+            ? "top-[70px]"
+            : bannerVisible ? "top-[150px] sm:top-[150px]" : "top-[106px] sm:top-[110px]"
         } ${
           menuOpen
             ? "opacity-100 pointer-events-auto"

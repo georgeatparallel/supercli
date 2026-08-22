@@ -3,8 +3,8 @@ import { inngest } from "../client";
 import { getPullRequestDiff, postReviewComment } from "@/modules/github/lib/github";
 import { retrieveContext } from "@/modules/pinecone/rag";
 import { generateText } from "ai";
-import { google } from "@ai-sdk/google";
-import { success } from "better-auth";
+import { gateway } from "@/lib/gateway";
+
 
 export const generateReview = inngest.createFunction(
 
@@ -64,7 +64,7 @@ export const generateReview = inngest.createFunction(
           Format your response in markdown.`;
         
           const{text} =  await generateText({
-              model: google("gemini-3.1-pro-preview") as any,
+              model: gateway("anthropic/claude-sonnet-4-20250514"),
               prompt
           })
           return text;
@@ -82,15 +82,25 @@ export const generateReview = inngest.createFunction(
                 }
             })
             if(repository){
-                await prisma.review.create({
-                    data:{
+                await prisma.review.upsert({
+                    where:{
+                        repositoryId_prNumber:{
+                            repositoryId: repository.id,
+                            prNumber,
+                        }
+                    },
+                    update:{
+                        prTitle: title,
+                        review,
+                        status: "completed",
+                    },
+                    create:{
                         repositoryId: repository.id,
                         prNumber,
                         prTitle: title,
                         prUrl: `https://github.com/${owner}/${repo}/pull/${prNumber}`,
                         review,
                         status: "completed"
-                        
                     }
                 })
             }

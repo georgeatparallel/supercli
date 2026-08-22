@@ -1,8 +1,12 @@
 "use client"
 
 import Link from "next/link"
+import { usePathname } from "next/navigation"
 
 export default function LaunchBanner() {
+  const pathname = usePathname()
+  if (pathname !== "/") return null
+
   return (
     <div className="sticky top-0 z-[10000] h-9 sm:h-10 bg-[#0a0a0a] border-b border-primary/15">
       <Link

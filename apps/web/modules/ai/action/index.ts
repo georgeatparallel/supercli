@@ -1,9 +1,6 @@
-'use server'
-
 import { inngest } from "@/inngest/client"
 import { getPullRequestDiff } from "@/modules/github/lib/github"
 import prisma from "@super/db"
-import { Octokit } from "octokit"
 
 export async function reviewPullRequest(
     owner: string,
