@@ -62,6 +62,7 @@ model Review {
   createdAt     DateTime    @default(now())
   updatedAt     DateTime    @updatedAt
 
+  @@unique([repositoryId, prNumber])
   @@index([repositoryId])
   @@map("review")
 }

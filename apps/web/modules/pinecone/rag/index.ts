@@ -1,17 +1,12 @@
 import { pineconeIndex } from '@/lib/pinecone/pinecone';
-import { google } from '@ai-sdk/google';
-import { createGoogleGenerativeAI } from '@ai-sdk/google';
+import { gateway } from '@/lib/gateway';
 import { embed } from 'ai';
 
 export async function generateEmbedding(text: string): Promise<number[]> {
     console.log("[DEBUG-PINECONE] generateEmbedding called, text length:", text.length)
-    
-    const google = createGoogleGenerativeAI({
-        baseURL: 'https://generativelanguage.googleapis.com/v1beta',
-    });
 
     const { embedding } = await embed({
-        model: google.textEmbeddingModel("gemini-embedding-001") as any,
+        model: gateway.embeddingModel("openai/text-embedding-3-small") as any,
         value: text
     })
     console.log("[DEBUG-PINECONE] generateEmbedding completed, embedding length:", embedding.length)

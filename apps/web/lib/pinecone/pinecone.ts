@@ -5,5 +5,6 @@ export const pinecone = new Pinecone({
 })
 
 export const pineconeIndex = pinecone.index({
-  name: "supercode-vector-embeddings-v3",
+  name: "supercode-vector-embeddings-v5",
+  host: "https://supercode-vector-embeddings-v5-y8wqt4m.svc.aped-4627-b74a.pinecone.io"
 })
