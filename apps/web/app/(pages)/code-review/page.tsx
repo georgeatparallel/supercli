@@ -314,13 +314,14 @@ export default function CodeReviewPage() {
               {/* Footer */}
               <div className="border-t border-neutral-100 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-900 px-5 py-3 flex items-center justify-between">
                 <div className="flex items-center gap-2 text-xs text-neutral-500 dark:text-neutral-400">
-                  <div className="h-5 w-5 rounded-full bg-gradient-to-br from-purple-500 to-blue-500" />
-                  <span>
-                    Reviewed by{" "}
-                    <span className="font-medium text-neutral-700 dark:text-neutral-300">
-                      Supercode
-                    </span>
-                  </span>
+                  <span>Reviewed by</span>
+                  <Image
+                    src="/supercode-logo.png"
+                    alt="Supercode"
+                    width={20}
+                    height={20}
+                    className="h-5 w-auto"
+                  />
                 </div>
                 <span className="text-xs text-neutral-400 dark:text-neutral-500">
                   8.2s
@@ -335,21 +336,69 @@ export default function CodeReviewPage() {
       <section className="border-b border-neutral-100 dark:border-neutral-900">
         <div className="mx-auto max-w-6xl px-6 py-16 lg:py-20">
           <motion.div
+            initial={heroInitial}
+            whileInView={heroAnimate}
+            viewport={{ once: true, margin: "-100px" }}
+            transition={heroTransition}
+            className="max-w-2xl mb-12"
+          >
+            <div className="inline-flex items-center gap-2 rounded-full border border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-900 px-3 py-1 text-xs text-neutral-600 dark:text-neutral-400 mb-6">
+              Insights
+            </div>
+            <h2 className="text-3xl font-medium tracking-tight sm:text-4xl">
+              Open Sourced AI code reviews.
+            </h2>
+            <p className="mt-4 text-neutral-600 dark:text-neutral-400 leading-relaxed">
+              We pioneered AI code reviews and have best-in-class context. Our
+              automated reviews are the central validation layer for AI code.
+            </p>
+          </motion.div>
+
+          <motion.div
             initial={prefersReduced ? false : { opacity: 0, transform: "translateY(16px)" }}
             whileInView={{ opacity: 1, transform: "translateY(0px)" }}
             viewport={{ once: true, margin: "-80px" }}
             transition={{ duration: 0.6, ease: curve }}
-            className="mx-auto max-w-4xl"
+            className="grid gap-8 lg:grid-cols-[1fr_340px] items-start"
           >
-            <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-950 shadow-2xl shadow-neutral-200/50 dark:shadow-none overflow-hidden">
+            {/* Left: Dashboard Image */}
+            <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-neutral-950 dark:bg-neutral-950 shadow-2xl shadow-neutral-200/50 dark:shadow-none overflow-hidden">
               <Image
                 src="/dashboard-img.png"
-                alt="Supercode dashboard showing AI code review results"
+                alt="Supercode dashboard showing repositories, commits, PRs, and activity calendar"
                 width={1200}
                 height={800}
                 className="w-full h-auto"
                 priority
               />
+            </div>
+
+            {/* Right: Features List */}
+            <div className="space-y-5">
+              <div>
+                  <div className="font-medium text-neutral-900 dark:text-white">Code Analysis</div>
+                  <div className="mt-1 text-sm text-neutral-500 dark:text-neutral-400">
+                    Understands your entire codebase, patterns, and conventions.
+                  </div>
+                </div>
+                <div>
+                  <div className="font-medium text-neutral-900 dark:text-white">Inline Comments</div>
+                  <div className="mt-1 text-sm text-neutral-500 dark:text-neutral-400">
+                    Actionable suggestions directly on the lines that matter.
+                  </div>
+                </div>
+                <div>
+                  <div className="font-medium text-neutral-900 dark:text-white">Security Detection</div>
+                  <div className="mt-1 text-sm text-neutral-500 dark:text-neutral-400">
+                    Catches vulnerabilities before they reach production.
+                  </div>
+                </div>
+                <div>
+                  <div className="font-medium text-neutral-900 dark:text-white">Learning System</div>
+                  <div className="mt-1 text-sm text-neutral-500 dark:text-neutral-400">
+                    Gets smarter with every review, adapting to your team's style.
+                </div>
+              </div>
             </div>
           </motion.div>
         </div>

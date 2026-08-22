@@ -104,3 +104,4 @@ apps/jarvis/.gitignore
 supercode-openmodel/research/
 supercode-openmodel/qwen-training/
 supercode-openmodel/.venv
+/cmd
