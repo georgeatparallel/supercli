@@ -18,6 +18,44 @@ interface _McpServerConfig {
   url?: string
   headers?: Record<string, string>
 }
+
+export const PARALLEL_MCP_PRESET = {
+  name: "parallel",
+  config: { url: "https://search.parallel.ai/mcp" },
+} as const
+
+type ParallelPresetDependencies = {
+  getConfig: typeof getCliConfig
+  saveConfig: typeof saveCliConfig
+  reconnect: (name: string, config: _McpServerConfig) => Promise<void>
+}
+
+export async function configureParallelMcp(
+  dependencies?: Partial<ParallelPresetDependencies>,
+): Promise<"configured" | "already-configured"> {
+  const config = await (dependencies?.getConfig ?? getCliConfig)()
+  const existing = (config as Record<string, any>) ?? {}
+  const existingServers = (existing.mcpServers ?? {}) as Record<string, _McpServerConfig>
+
+  if (Object.prototype.hasOwnProperty.call(existingServers, PARALLEL_MCP_PRESET.name)) {
+    return "already-configured"
+  }
+
+  await (dependencies?.saveConfig ?? saveCliConfig)({
+    ...existing as any,
+    mcpServers: {
+      ...existingServers,
+      [PARALLEL_MCP_PRESET.name]: PARALLEL_MCP_PRESET.config,
+    },
+  } as any)
+
+  const reconnect = dependencies?.reconnect ?? (async (name, server) => {
+    const mgr = await mcpManager()
+    await mgr.reconnectServer(name, server)
+  })
+  await reconnect(PARALLEL_MCP_PRESET.name, PARALLEL_MCP_PRESET.config)
+  return "configured"
+}
 import { getCliConfig, saveCliConfig } from "src/lib/cli-config"
 import { composioSessionManager, type AppEntry } from "src/mcp/composio"
 import { theme, heavyDivider } from "src/cli/utils/tui"
@@ -723,6 +761,16 @@ export async function mcpCommand(args: string): Promise<{ type: "help" }> {
     return { type: "help" }
   }
 
+  if (trimmed === "parallel") {
+    const result = await configureParallelMcp()
+    if (result === "already-configured") {
+      process.stdout.write(`\r\n ${chalk.hex(theme.amber)("◆")} parallel is already configured; existing settings were left unchanged\r\n`)
+    } else {
+      process.stdout.write(`\r\n ${chalk.hex(theme.green)("◆")} parallel configured and connected\r\n`)
+    }
+    return { type: "help" }
+  }
+
   if (trimmed === "remove" || trimmed === "rm") {
     await removeMcp()
     return { type: "help" }
@@ -890,6 +938,7 @@ function showMcpHelp(): void {
   process.stdout.write(`${divider}\r\n`)
   process.stdout.write(` ${green("/mcp")}${muted("                          ")}interactive connection manager\r\n`)
   process.stdout.write(` ${green("/mcp add")}${muted("                       ")}add & connect a new server\r\n`)
+  process.stdout.write(` ${green("/mcp parallel")}${muted("                  ")}add & connect Parallel Search\r\n`)
   process.stdout.write(` ${green("/mcp list")}${muted("                      ")}list configured servers\r\n`)
   process.stdout.write(` ${green("/mcp connect")}${muted("                   ")}connect a configured server\r\n`)
   process.stdout.write(` ${green("/mcp disconnect")}${muted("                ")}disconnect a server\r\n`)
