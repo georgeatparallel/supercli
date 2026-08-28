@@ -185,9 +185,11 @@ export async function updateCliConfig(
 ): Promise<void> {
   await fs.mkdir(path.dirname(configFile), { recursive: true })
   configFile = await resolveConfigFile(configFile)
+  let lockError: Error | undefined
   const release = await lock(configFile, {
     realpath: false,
     retries: { retries: 20, minTimeout: 50, maxTimeout: 1000 },
+    onCompromised: (error) => { lockError = error },
   })
   const temporaryFile = `${configFile}.${randomUUID()}.tmp`
   try {
@@ -201,6 +203,7 @@ export async function updateCliConfig(
     if (!existing || typeof existing !== "object" || Array.isArray(existing)) {
       throw new Error("CLI config must be a JSON object")
     }
+    if (lockError) throw lockError
     const current = { ...DEFAULTS, ...existing, version }
     const updates = update(current)
     if (updates === null) return
@@ -220,6 +223,8 @@ export async function updateCliConfig(
       flag: "wx",
     })
     if (mode !== undefined) await fs.chmod(temporaryFile, mode)
+    // Never publish a stale snapshot after a refresh reports that the lock was lost.
+    if (lockError) throw lockError
     await fs.rename(temporaryFile, configFile)
   } finally {
     // Cleanup must not hide a write failure or report a completed rename as failed.

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
+import * as lockfile from "proper-lockfile"
 
 import { version } from "../../package.json"
 import { getCliConfig, saveCliConfig, updateCliConfig } from "./cli-config"
@@ -262,6 +263,68 @@ describe("CLI config persistence", () => {
     await updateCliConfig(() => ({ mode: "agent" }), configFile)
     expect((await getCliConfig(configFile))?.mode).toBe("agent")
   })
+
+  test("a compromised writer cannot overwrite a competing update and can recover", async () => {
+    await writeConfig({ ...BASE_CONFIG, mcpServers: { original: { command: "keep" } } })
+    const resolvedConfigFile = await fs.realpath(configFile)
+    const displacedLock = path.join(directory, "displaced.lock")
+    const writePaused = Promise.withResolvers<void>()
+    const resumeWrite = Promise.withResolvers<void>()
+    const compromised = Promise.withResolvers<Error>()
+    const lock = lockfile.lock
+    const lockSpy = spyOn(lockfile, "lock").mockImplementation((file, options) => lock(file, {
+      ...options,
+      update: 1000,
+      onCompromised: (error) => {
+        options?.onCompromised?.(error)
+        compromised.resolve(error)
+      },
+    }))
+    const writeFile = fs.writeFile
+    let pauseNextWrite = true
+    const writeSpy = spyOn(fs, "writeFile").mockImplementation(async (file, data, options) => {
+      await writeFile(file, data, options)
+      if (pauseNextWrite && typeof file === "string" && file.startsWith(`${resolvedConfigFile}.`) && file.endsWith(".tmp")) {
+        pauseNextWrite = false
+        writePaused.resolve()
+        await resumeWrite.promise
+      }
+    })
+    const firstUpdate = Promise.allSettled([updateCliConfig((config) => ({
+      mcpServers: { ...config.mcpServers, stale: { command: "must-not-save" } },
+    }), configFile)])
+
+    try {
+      await writePaused.promise
+      // Displace the actual lock while its writer is waiting on file I/O.
+      await fs.rename(`${resolvedConfigFile}.lock`, displacedLock)
+      await updateCliConfig((config) => ({
+        mcpServers: { ...config.mcpServers, competitor: { command: "newer" } },
+      }), configFile)
+      const competitorBytes = await fs.readFile(configFile, "utf-8")
+      const error = await compromised.promise
+      expect(error).toMatchObject({ code: "ECOMPROMISED" })
+
+      resumeWrite.resolve()
+      expect(await firstUpdate).toEqual([{ status: "rejected", reason: error }])
+      expect(await fs.readFile(configFile, "utf-8")).toBe(competitorBytes)
+      expect((await fs.readdir(directory)).sort()).toEqual(["cli-config.json", "displaced.lock"])
+
+      await fs.rmdir(displacedLock)
+      await updateCliConfig(() => ({ mode: "agent" }), configFile)
+      expect(await getCliConfig(configFile)).toEqual({
+        ...BASE_CONFIG,
+        mode: "agent",
+        mcpServers: { original: { command: "keep" }, competitor: { command: "newer" } },
+      })
+      expect(await fs.readdir(directory)).toEqual(["cli-config.json"])
+    } finally {
+      resumeWrite.resolve()
+      await firstUpdate
+      writeSpy.mockRestore()
+      lockSpy.mockRestore()
+    }
+  }, 10000)
 
   test("replaces server definitions and deletes names without restoring old nested values", async () => {
     await writeConfig({

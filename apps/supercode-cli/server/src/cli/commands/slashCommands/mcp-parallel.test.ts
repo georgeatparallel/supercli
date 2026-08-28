@@ -4,9 +4,10 @@ import os from "node:os"
 import path from "node:path"
 import * as prompts from "@clack/prompts"
 
-import { version } from "../../../../package.json"
 import * as cliConfig from "src/lib/cli-config"
 import { getMcpManager } from "src/mcp/mcp-manager"
+
+import { version } from "../../../../package.json"
 import { configureParallelMcp, mcpCommand, PARALLEL_MCP_PRESET, type ParallelPresetDependencies } from "./mcp"
 
 const directories: string[] = []

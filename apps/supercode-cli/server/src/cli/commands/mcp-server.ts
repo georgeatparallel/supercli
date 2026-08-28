@@ -17,28 +17,36 @@ export const mcpServer = new Command("mcp-server")
   .action(async (action?: string, name?: string, options?: Record<string, string>) => {
     const opts = options ?? {}
 
-    if (!action || action === "list") {
-      await listServers()
-      return
-    }
+    try {
+      if (!action || action === "list") {
+        await listServers()
+        return
+      }
 
-    switch (action) {
-      case "add":
-        await addServer(name, opts)
-        break
-      case "remove":
-        await removeServer(name)
-        break
-      case "start":
-        await startServer(name)
-        break
-      case "stop":
-        await stopServer(name)
-        break
-      default:
-        console.log()
-        console.log(errorBox(`Unknown action "${action}". Use add | remove | list | start | stop`))
-        console.log()
+      switch (action) {
+        case "add":
+          await addServer(name, opts)
+          break
+        case "remove":
+          await removeServer(name)
+          break
+        case "start":
+          await startServer(name)
+          break
+        case "stop":
+          await stopServer(name)
+          break
+        default:
+          console.log()
+          console.log(errorBox(`Unknown action "${action}". Use add | remove | list | start | stop`))
+          console.log()
+      }
+    } catch (error) {
+      process.exitCode = 1
+      const message = error instanceof Error ? error.message : String(error)
+      console.log()
+      console.log(errorBox(`MCP command failed: ${message}`))
+      console.log()
     }
   })
 
